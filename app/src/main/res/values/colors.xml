@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#1E293B</color> <!-- Slate 800 -->
+    <color name="on_primary">#FFFFFF</color>
+    <color name="primary_container">#334155</color> <!-- Slate 700 -->
+    <color name="on_primary_container">#FFFFFF</color>
+    
+    <color name="secondary">#D4AF37</color> <!-- Premium Gold -->
+    <color name="on_secondary">#000000</color>
+    <color name="secondary_container">#F3E5AB</color>
+    <color name="on_secondary_container">#1E293B</color>
+    
+    <color name="background">#0F172A</color> <!-- Slate 900 -->
+    <color name="on_background">#E2E8F0</color> <!-- Slate 200 -->
+    
+    <color name="surface">#1E293B</color>
+    <color name="on_surface">#E2E8F0</color>
+    
+    <color name="black">#000000</color>
+    <color name="white">#FFFFFF</color>
+</resources>
