@@ -5,6 +5,24 @@ All notable changes to PrettyDamnFine are documented here. This project follows
 
 ---
 
+## [2.0.2] — 2026-11-20
+
+### Removed
+- **All AI / Groq functionality removed.** No network access, no API key, no model picker, and no `INTERNET` permission. Dependencies (`okhttp`, `gson`, `security-crypto`) removed. The app is fully offline.
+- Bookmark buttons removed from the viewer.
+
+### Added
+- **Home-screen theme toggle** (light/dark) plus persisted app theme mode.
+- **Library multi-select**: long-press a document to select, Select all, and Delete (removes the file from the device where permitted, and from the library).
+- **Library search and sort** (recent, oldest, name).
+- **Remove highlight**: select highlighted text and choose Remove highlight.
+- Material Icons Extended for a consistent, vector icon set across the app.
+
+### Changed
+- Standardized icons and spacing; replaced ad-hoc text buttons with icon buttons; themed the reading surface via Material 3 tokens.
+
+---
+
 ## [2.0.1] — 2026-11-20
 
 ### Fixed

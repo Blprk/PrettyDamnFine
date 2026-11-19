@@ -13,8 +13,8 @@ android {
         applicationId = "com.blprkfgre.prettydamnfine"
         minSdk = 24
         targetSdk = 36
-        versionCode = 4
-        versionName = "2.0.1"
+        versionCode = 5
+        versionName = "2.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -55,10 +55,8 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.mupdf.fitz)
-    implementation(libs.gson)
-    implementation(libs.androidx.security.crypto)
-    implementation(libs.okhttp)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

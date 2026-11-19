@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -36,10 +37,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import com.blprkfgre.prettydamnfine.ai.SemanticSearchResult
 import com.blprkfgre.prettydamnfine.pdf.PdfEngine
 import com.blprkfgre.prettydamnfine.pdf.ReadingTheme
-import com.blprkfgre.prettydamnfine.ui.settings.SettingsRepository
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,7 +60,6 @@ fun PdfViewerScreen(
     val selectedText by viewModel.selectedText.collectAsState()
     val pageCharPositions by viewModel.pageCharPositions.collectAsState()
     val toastMessage by viewModel.toastMessage.collectAsState()
-    val bookmarks by viewModel.bookmarks.collectAsState()
     val outline by viewModel.outline.collectAsState()
     val currentTheme by viewModel.currentTheme.collectAsState()
     val showOutline by viewModel.showOutline.collectAsState()
@@ -74,18 +72,10 @@ fun PdfViewerScreen(
         currentTheme
     }
     
-    // Semantic search state
-    val semanticSearchResults by viewModel.semanticSearchResults.collectAsState()
-    val isSemanticSearching by viewModel.isSemanticSearching.collectAsState()
-    val semanticSearchError by viewModel.semanticSearchError.collectAsState()
-    val showSemanticSearch by viewModel.showSemanticSearch.collectAsState()
-    
     val context = LocalContext.current
-    val settingsRepository = remember { SettingsRepository(context) }
 
     var isSearchMode by remember { mutableStateOf(false) }
     var showPageJump by remember { mutableStateOf(false) }
-    var showBookmarks by remember { mutableStateOf(false) }
     var showThemeSelector by remember { mutableStateOf(false) }
     var selectionToolbarVisible by remember { mutableStateOf(false) }
 
@@ -101,8 +91,7 @@ fun PdfViewerScreen(
 
     // Back gesture: dismiss the current layer before leaving the document.
     // Dialogs and modal bottom sheets dismiss themselves via onDismissRequest.
-    val overlayIsOpen = showSemanticSearch || showPageJump || showBookmarks ||
-        showThemeSelector || showOutline || showOverview
+    val overlayIsOpen = showPageJump || showThemeSelector || showOutline || showOverview
     BackHandler(enabled = true) {
         when {
             overlayIsOpen -> Unit
@@ -116,6 +105,10 @@ fun PdfViewerScreen(
     }
 
     val listState = rememberLazyListState()
+
+    // derivedStateOf keeps the page indicator (and everything that reads currentPage)
+    // from recomposing on every scroll frame — only when the page actually changes.
+    val currentPage by remember { derivedStateOf { listState.firstVisibleItemIndex } }
 
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
@@ -159,22 +152,6 @@ fun PdfViewerScreen(
         }
     }
 
-    // Show semantic search dialog
-    if (showSemanticSearch) {
-        SemanticSearchDialog(
-            isSearching = isSemanticSearching,
-            results = semanticSearchResults,
-            error = semanticSearchError,
-            onSearch = { query -> viewModel.performSemanticSearch(query) },
-            onDismiss = { viewModel.dismissSemanticSearch() },
-            onClearError = { viewModel.clearSemanticSearchError() },
-            onModelChange = { model -> viewModel.setModel(model) },
-            onRefreshModels = { viewModel.refreshModels() },
-            availableModels = settingsRepository.modelOptions(),
-            currentModel = settingsRepository.selectedModel
-        )
-    }
-
     if (engine == null) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("No PDF Loaded", style = MaterialTheme.typography.bodyLarge)
@@ -183,9 +160,6 @@ fun PdfViewerScreen(
     }
 
     val currentEngine = engine!!
-    // derivedStateOf keeps the page indicator (and everything that reads currentPage)
-    // from recomposing on every scroll frame — only when the first visible page changes.
-    val currentPage by remember { derivedStateOf { listState.firstVisibleItemIndex } }
 
     if (showPageJump) {
         PageJumpDialog(
@@ -203,18 +177,6 @@ fun PdfViewerScreen(
             theme = effectiveTheme,
             onPageSelected = { viewModel.requestNavigateToPage(it) },
             onDismiss = { viewModel.dismissOverview() }
-        )
-    }
-
-    if (showBookmarks) {
-        BookmarksSheet(
-            bookmarks = bookmarks,
-            currentPage = currentPage,
-            onBookmarkSelected = { bookmark ->
-                viewModel.goToBookmark(bookmark)
-                showBookmarks = false
-            },
-            onDismiss = { showBookmarks = false }
         )
     }
 
@@ -287,6 +249,9 @@ fun PdfViewerScreen(
                         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) }
                     },
                     actions = {
+                        IconButton(onClick = { viewModel.shareDocument() }) {
+                            Icon(Icons.Filled.Share, "Share")
+                        }
                         IconButton(onClick = { isSearchMode = true }) { Icon(Icons.Default.Search, "Search text") }
                         IconButton(onClick = { showThemeSelector = true }) { Icon(Icons.Default.Settings, "Settings") }
                     }
@@ -294,57 +259,16 @@ fun PdfViewerScreen(
             }
         },
         floatingActionButton = {
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(bottom = 72.dp) // Move FABs higher to clear the floating pill
-            ) {
-                // Semantic search FAB
-                if (!isSearchMode && textSelection == null) {
-                    FloatingActionButton(
-                        onClick = { viewModel.showSemanticSearch() },
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                        modifier = Modifier.size(48.dp)
-                    ) {
-                        Icon(Icons.Default.Search, contentDescription = "AI Search")
-                    }
-                }
-                
-                // Selection actions appear only after the gesture has settled.
-                if (textSelection != null && selectedText.isNotBlank() && selectionToolbarVisible) {
-                    if (Patterns.PHONE.matcher(selectedText).matches()) {
-                        SmallFloatingActionButton(
-                            onClick = {
-                                val cleanPhone = selectedText.replace(Regex("[^0-9+]"), "")
-                                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$cleanPhone")))
-                            },
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
-                        ) { Icon(Icons.Default.Phone, "Call") }
-                    }
-                    if (Patterns.EMAIL_ADDRESS.matcher(selectedText).matches()) {
-                        SmallFloatingActionButton(
-                            onClick = { context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$selectedText"))) },
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
-                        ) { Icon(Icons.Default.Email, "Email") }
-                    }
-                    SmallFloatingActionButton(
-                        onClick = { viewModel.highlightSelection() },
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                    ) { Icon(Icons.Default.Edit, "Highlight selection") }
-                    ExtendedFloatingActionButton(
-                        onClick = { viewModel.copySelection() },
-                        icon = { Icon(Icons.Default.Check, null) },
-                        text = { Text("Copy") }
+            if (!isSearchMode && textSelection == null) {
+                FloatingActionButton(
+                    onClick = { viewModel.toggleReadMode() },
+                    modifier = Modifier.padding(bottom = 96.dp),
+                    containerColor = if (isReadMode) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Icon(
+                        if (isReadMode) Icons.Filled.Lock else Icons.Filled.Star,
+                        if (isReadMode) "Exit read mode" else "Read mode"
                     )
-                    SmallFloatingActionButton(onClick = { viewModel.clearSelection() }) {
-                        Icon(Icons.Default.Close, "Clear selection")
-                    }
-                } else if (!isSearchMode && textSelection == null) {
-                    FloatingActionButton(
-                        onClick = { viewModel.toggleReadMode() },
-                        containerColor = if (isReadMode) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
-                    ) { Icon(if (isReadMode) Icons.Default.Lock else Icons.Default.Star, null) }
                 }
             }
         }
@@ -353,7 +277,7 @@ fun PdfViewerScreen(
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0xFF2A2A2A))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 val maxWidth = constraints.maxWidth.toFloat()
                 val maxHeight = constraints.maxHeight.toFloat()
@@ -437,6 +361,49 @@ fun PdfViewerScreen(
                 )
             }
 
+            // Text selection toolbar — a proper contextual panel, not floating buttons.
+            if (textSelection != null && selectedText.isNotBlank() && selectionToolbarVisible) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 96.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    tonalElevation = 3.dp,
+                    shadowElevation = 6.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        if (Patterns.PHONE.matcher(selectedText).matches()) {
+                            IconButton(onClick = {
+                                val clean = selectedText.replace(Regex("[^0-9+]"), "")
+                                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$clean")))
+                            }) { Icon(Icons.Filled.Phone, "Call") }
+                        }
+                        if (Patterns.EMAIL_ADDRESS.matcher(selectedText).matches()) {
+                            IconButton(onClick = {
+                                context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$selectedText")))
+                            }) { Icon(Icons.Filled.Email, "Email") }
+                        }
+                        IconButton(onClick = { viewModel.copySelection() }) {
+                            Icon(Icons.Filled.ContentCopy, "Copy selection")
+                        }
+                        IconButton(onClick = { viewModel.highlightSelection() }) {
+                            Icon(Icons.Filled.Edit, "Highlight selection")
+                        }
+                        IconButton(onClick = { viewModel.removeHighlightFromSelection() }) {
+                            Icon(Icons.Filled.Delete, "Remove highlight")
+                        }
+                        IconButton(onClick = { viewModel.clearSelection() }) {
+                            Icon(Icons.Filled.Close, "Clear selection")
+                        }
+                    }
+                }
+            }
+
             // Floating Pill Overlay
             Surface(
                 modifier = Modifier
@@ -457,25 +424,14 @@ fun PdfViewerScreen(
                     IconButton(onClick = { viewModel.toggleOutline() }) {
                         Icon(Icons.AutoMirrored.Filled.List, "Outline", tint = MaterialTheme.colorScheme.onSurface)
                     }
-                    
-                    VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
-                    
-                    // View bookmarks button
-                    IconButton(onClick = { showBookmarks = true }) {
-                        Icon(
-                            imageVector = Icons.Default.FavoriteBorder,
-                            contentDescription = "View Bookmarks",
-                            tint = if (bookmarks.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                    
+
                     VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
 
                     IconButton(onClick = { 
                         scale = (scale - 0.5f).coerceIn(1f, 5f)
                         if (scale <= 1f) { offsetX = 0f; offsetY = 0f }
-                    }) { 
-                        Text("-", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface)
+                    }) {
+                        Icon(Icons.Filled.Remove, "Zoom out", tint = MaterialTheme.colorScheme.onSurface)
                     }
                     
                     Text(
@@ -488,254 +444,23 @@ fun PdfViewerScreen(
 
                     IconButton(onClick = { 
                         scale = (scale + 0.5f).coerceIn(1f, 5f)
-                    }) { 
-                        Text("+", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface)
+                    }) {
+                        Icon(Icons.Filled.Add, "Zoom in", tint = MaterialTheme.colorScheme.onSurface)
                     }
 
                     VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
 
-                    IconButton(onClick = { viewModel.toggleBookmark(currentPage) }) { 
-                        Icon(
-                            imageVector = if (viewModel.isPageBookmarked(currentPage)) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Bookmark",
-                            tint = if (viewModel.isPageBookmarked(currentPage)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                        )
+                    IconButton(onClick = { viewModel.shareDocument() }) {
+                        Icon(Icons.Filled.Share, "Share", tint = MaterialTheme.colorScheme.onSurface)
                     }
 
                     VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
 
                     IconButton(onClick = { viewModel.saveAnnotations() }) {
-                        Icon(Icons.Default.Check, "Save annotations", tint = MaterialTheme.colorScheme.onSurface)
-                    }
-
-                    VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
-
-                    TextButton(onClick = { viewModel.shareDocument() }) {
-                        Text("Share", style = MaterialTheme.typography.labelMedium)
+                        Icon(Icons.Filled.Save, "Save annotations", tint = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun SemanticSearchDialog(
-    isSearching: Boolean,
-    results: List<SemanticSearchResult>,
-    error: String?,
-    onSearch: (String) -> Unit,
-    onDismiss: () -> Unit,
-    onClearError: () -> Unit,
-    onModelChange: (String) -> Unit,
-    onRefreshModels: () -> Unit,
-    availableModels: List<com.blprkfgre.prettydamnfine.ui.settings.ModelOption>,
-    currentModel: String
-) {
-    var query by remember { mutableStateOf("") }
-    var showModelSelector by remember { mutableStateOf(false) }
-    val context = LocalContext.current
-    val focusRequester = remember { FocusRequester() }
-
-    val currentModelName = availableModels.find { it.id == currentModel }?.name
-        ?: currentModel.substringAfterLast("/")
-    
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-    }
-
-    LaunchedEffect(error) {
-        error?.let {
-            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
-            onClearError()
-        }
-    }
-
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            )
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // Header with model selector
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "AI Semantic Search",
-                        style = MaterialTheme.typography.titleLarge
-                    )
-                    TextButton(onClick = { showModelSelector = true }) {
-                        Text(
-                            text = currentModelName,
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                        Icon(
-                            imageVector = Icons.Default.ArrowDropDown,
-                            contentDescription = "Select model",
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-                
-                Text(
-                    text = "Ask questions about your PDF using natural language",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    placeholder = { Text("e.g., What is this document about?") },
-                    modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(
-                        onSearch = { 
-                            if (query.isNotBlank()) {
-                                onSearch(query)
-                            }
-                        }
-                    ),
-                    enabled = !isSearching,
-                    trailingIcon = {
-                        if (isSearching) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp
-                            )
-                        }
-                    }
-                )
-                
-                Button(
-                    onClick = { 
-                        if (query.isNotBlank()) {
-                            onSearch(query)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isSearching && query.isNotBlank()
-                ) {
-                    Icon(Icons.Default.Search, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Search with AI")
-                }
-                
-                if (results.isNotEmpty()) {
-                    HorizontalDivider()
-                    
-                    results.forEach { result ->
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(12.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "Page ${result.pageNumber}",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    TextButton(
-                                        onClick = {
-                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("AI Result", result.content))
-                                            Toast.makeText(context, "Copied!", Toast.LENGTH_SHORT).show()
-                                        }
-                                    ) {
-                                        Text("Copy")
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = 200.dp)
-                                        .verticalScroll(rememberScrollState())
-                                ) {
-                                    Text(
-                                        text = result.content,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                TextButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.align(Alignment.End)
-                ) {
-                    Text("Close")
-                }
-            }
-        }
-    }
-    
-    // Model selector dialog
-    if (showModelSelector) {
-        AlertDialog(
-            onDismissRequest = { showModelSelector = false },
-            title = { Text("Select AI Model") },
-            text = {
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState())
-                ) {
-                    availableModels.forEach { model ->
-                        TextButton(
-                            onClick = {
-                                onModelChange(model.id)
-                                showModelSelector = false
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalAlignment = Alignment.Start
-                            ) {
-                                Text(
-                                    text = model.name,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = if (model.id == currentModel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = model.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showModelSelector = false }) {
-                    Text("Cancel")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { onRefreshModels() }) {
-                    Text("Refresh")
-                }
-            }
-        )
     }
 }

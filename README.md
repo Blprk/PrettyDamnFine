@@ -3,7 +3,8 @@
 <img src="fastlane/metadata/android/en-US/images/icon.png" alt="PrettyDamnFine Icon" width="128" height="128" style="border-radius:24px;">
 
 # PrettyDamnFine
-**A Premium, Minimalist Android PDF Reader powered by AI**
+
+**A fast, distraction-free Android PDF reader**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![F-Droid](https://img.shields.io/badge/F--Droid-Ready-success.svg)](https://f-droid.org/)
@@ -15,74 +16,39 @@
 
 ---
 
-## ✦ Overview
+## Overview
 
-**PrettyDamnFine** is a distraction-free, privacy-conscious PDF reader designed for deep work. It strips away the clutter of traditional document viewers, offering a gesture-driven interface that puts your content front and center. 
+PrettyDamnFine is a private, offline-first PDF reader built for deep work. It uses the native **MuPDF** engine for crisp rendering, real PDF annotations, and accurate text selection — with no network access and no accounts.
 
-When you need to extract key insights, jump to conclusions, or summarize complex chapters, the integrated **AI Semantic Search** acts as your personal reading assistant.
+## Features
 
-## ✨ Core Features
+- **Fast native rendering** — MuPDF 1.28.5, bounded bitmap cache, page prefetch, fast scrolling.
+- **Annotations** — select text and add a real PDF highlight; remove it the same way; save edits back to your private working copy.
+- **Library management** — search, sort (recent / oldest / name), multi-select with long-press, delete files from device, and share any PDF.
+- **Reading themes** — light, dark, sepia and auto for the page; a dedicated light/dark toggle on the home screen for the app UI.
+- **Gestures** — pinch zoom, double-tap zoom, read mode, fast scrollbar, page overview, and proper system Back handling.
+- **Local text search** — search extracted text, jump between matches, and see highlighted results on the page.
+- **Privacy** — no internet permission, no analytics, no cloud. Your documents stay on your device.
 
-- 🌑 **Cinematic Reading Themes**: True light mode, a warm sepia envelope, and a comfortable, contrast-balanced dark mode designed to reduce eye strain during late-night reading sessions.
-- ⚡ **High-Performance Rendering**: Built on robust native rendering APIs, ensuring smooth scrolling and instantaneous zooming—even for massive, graphics-heavy files.
-- 🧠 **AI-Powered Semantic Search**: Speak to your documents. Ask questions in natural language and receive concise, intelligent answers based strictly on the document text. *(Requires a user-provided Groq API key)*.
-- 🧭 **Gesture-Driven UX**: Hide the UI at will. Double-tap to zoom, pinch to pan, and rely on subtle cues rather than intrusive toolbars.
-- 📚 **Smart Library**: Automatically curates your workspace, tracking recent documents and bookmarking your exact page and zoom level for a seamless return.
+> AI features were removed in v2.0.2. The app is fully offline.
 
----
+## Building
 
-## 📸 Interface Preview
-
-<div align="center">
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="30%" alt="Library View">
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="30%" alt="Dark Mode">
-  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="30%" alt="AI Search">
-</div>
-
----
-
-## 🛠️ Installation & Building
-
-### Standard Download
-You can download the latest compiled `.apk` directly from the [Releases page](../../releases).
-
-### F-Droid
-*F-Droid submission is currently underway. Once approved, the app will be available in the main repository.*
-
-### Build from Source
-To build PrettyDamnFine yourself, you'll need Android Studio (or a standard Android Gradle toolchain).
+Requires Android SDK Platform 36 and Build Tools 36.0.0. MuPDF is resolved from Artifex's Maven repository configured in `settings.gradle.kts`.
 
 ```bash
-# Clone the repository
 git clone https://github.com/Blprk/PrettyDamnFine.git
-
-# Navigate into the project
 cd PrettyDamnFine
-
-# Build the release APK
 ./gradlew assembleRelease
 ```
 
----
+Set `sdk.dir` in `local.properties`. Release builds currently use the debug signing key.
 
-## 🔒 Privacy & AI Configuration
+## Documentation
 
-PrettyDamnFine is fully offline-first. Your PDFs never leave your device unless you choose to use the AI Semantic Search feature.
+- [CHANGELOG.md](CHANGELOG.md) — full change history.
+- [PROPOSAL.md](PROPOSAL.md) — architecture decisions and roadmap (historical; includes the removed AI proposal).
 
-To use AI features:
-1. Obtain a free API key from [Groq](https://console.groq.com/keys).
-2. Open the app settings (⚙️) from the Library view.
-3. Enter your key securely.
+## License
 
-*Keys are stored encrypted locally on your device via `EncryptedSharedPreferences`.*
-
----
-
-## 📄 License & Legal
-
-This project is licensed under the **GNU Affero General Public License v3.0 or later**. See [LICENSE](LICENSE). Code originally developed under Apache-2.0 is retained under those terms in [LICENSE-APACHE.txt](LICENSE-APACHE.txt); the combined work is distributed under AGPL-3.0 because the PDF engine (MuPDF `fitz`) is AGPL-3.0.
-
-AI capabilities rely on third-party integrations (Groq Inc.). Users are responsible for adhering to corresponding terms of service when passing text into the API.
-
-### Engine & licensing notice
-PDF rendering, text extraction and annotations are powered by **MuPDF** (Artifex Software), licensed under AGPL-3.0-or-later with commercial alternatives available from Artifex. No proprietary SDKs may be added to this application.
+Licensed under the **GNU AGPL v3.0 or later** ([LICENSE](LICENSE)) because MuPDF is AGPL-3.0. Original Apache-2.0 code is retained in [LICENSE-APACHE.txt](LICENSE-APACHE.txt).

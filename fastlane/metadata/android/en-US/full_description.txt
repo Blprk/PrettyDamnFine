@@ -1,13 +1,12 @@
-PrettyDamnFine is a distraction-free PDF reader designed for high performance and focus.
+PrettyDamnFine is a distraction-free, offline-first PDF reader built for focus.
 
 Features:
-- **Minimalist Interface**: Gesture-driven experience that puts your content first.
-- **High Performance**: Smooth scrolling and zooming, even for large documents.
-- **AI-Powered Semantic Search**: Ask questions or find information in your PDFs using natural language (requires a user-provided Groq API key).
-- **Multiple Reading Themes**: Choose between Light, Dark, Sepia, or Auto modes to suit your environment.
-- **Lazy Rendering**: Efficient memory usage with state-of-the-art PDFium rendering.
-- **Library Management**: Automatically keep track of your most recent documents.
+- Native MuPDF rendering for crisp pages and fast scrolling.
+- Real PDF highlights: select text to highlight or remove a highlight, then save.
+- Library search, sorting, multi-select and deletion, plus share to any app.
+- Light, dark, sepia and auto reading themes, and a home-screen light/dark toggle.
+- Gesture controls: pinch zoom, double-tap zoom, read mode, fast scroll and page overview.
+- Local text search with highlighted matches.
+- No network access, no accounts, no analytics. Your documents stay on your device.
 
-Experience a "Pretty Damn Fine" way to read your documents today.
-
-*Note: AI Semantic Search features depend on the external Groq API and require an active internet connection and a personal API key.*
+Licensed under AGPL-3.0-or-later.

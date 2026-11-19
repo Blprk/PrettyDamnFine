@@ -422,6 +422,52 @@ class PdfEngine private constructor(
         }
     }
 
+    /** Removes PDF annotations whose area intersects the given normalised rects. */
+    fun removeAnnotationsInRects(pageIndex: Int, rects: List<RectF>): Int = synchronized(nativeLock) {
+        val doc = document as? PDFDocument ?: return@synchronized 0
+        if (rects.isEmpty()) return@synchronized 0
+        val page = try {
+            doc.loadPage(pageIndex) as? PDFPage
+        } catch (e: Exception) {
+            null
+        } ?: return@synchronized 0
+
+        try {
+            val bounds = page.bounds
+            val w = maxOf(1f, bounds.x1 - bounds.x0)
+            val h = maxOf(1f, bounds.y1 - bounds.y0)
+            val annotations = page.annotations ?: return@synchronized 0
+            var removed = 0
+            for (annotation in annotations) {
+                val r = annotation.bounds
+                val annotationRect = RectF(
+                    (r.x0 - bounds.x0) / w,
+                    (r.y0 - bounds.y0) / h,
+                    (r.x1 - bounds.x0) / w,
+                    (r.y1 - bounds.y0) / h
+                )
+                if (rects.any {
+                        it.intersects(
+                            annotationRect.left,
+                            annotationRect.top,
+                            annotationRect.right,
+                            annotationRect.bottom
+                        )
+                    }) {
+                    page.deleteAnnotation(annotation)
+                    removed++
+                }
+                annotation.destroy()
+            }
+            if (removed > 0) page.update()
+            removed
+        } catch (e: Exception) {
+            0
+        } finally {
+            page.destroy()
+        }
+    }
+
     /** Drops cached bitmaps for a page so an annotation edit becomes visible. */
     fun invalidatePage(pageIndex: Int) {
         bitmapCache?.let { cache ->

@@ -3,67 +3,55 @@ package com.blprkfgre.prettydamnfine
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import com.blprkfgre.prettydamnfine.ui.library.LibraryScreen
+import com.blprkfgre.prettydamnfine.ui.theme.AppThemeMode
 import com.blprkfgre.prettydamnfine.ui.pdf.PdfViewerScreen
 import com.blprkfgre.prettydamnfine.ui.pdf.PdfViewerViewModel
-import com.blprkfgre.prettydamnfine.ui.settings.SettingsScreen
 import com.blprkfgre.prettydamnfine.ui.theme.PrettyDamnFineTheme
-import com.blprkfgre.prettydamnfine.ui.settings.SettingsRepository
 
 class MainActivity : ComponentActivity() {
     private val viewModel: PdfViewerViewModel by viewModels()
-    private lateinit var settingsRepository: SettingsRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        
-        settingsRepository = SettingsRepository(this)
 
         if (intent?.action == Intent.ACTION_VIEW) {
-            intent.data?.let { uri ->
-                viewModel.openDocument(uri)
-            }
+            intent.data?.let { viewModel.openDocument(it) }
         }
 
         setContent {
-            PrettyDamnFineTheme {
-                MainApp(viewModel, settingsRepository)
+            val themeMode by viewModel.appThemeMode.collectAsState()
+            val systemDark = isSystemInDarkTheme()
+            val dark = when (themeMode) {
+                AppThemeMode.SYSTEM -> systemDark
+                AppThemeMode.LIGHT -> false
+                AppThemeMode.DARK -> true
+            }
+            PrettyDamnFineTheme(darkTheme = dark) {
+                MainApp(viewModel, dark)
             }
         }
     }
 }
 
 @Composable
-fun MainApp(viewModel: PdfViewerViewModel, settingsRepository: SettingsRepository) {
+fun MainApp(viewModel: PdfViewerViewModel, dark: Boolean) {
     val engine by viewModel.engine.collectAsState()
-    var showSettings by remember { mutableStateOf(false) }
 
-    // Settings is a top-level overlay; back returns to the library. The viewer
-    // registers its own BackHandler for its sheets/dialogs and for closing the doc.
-    BackHandler(enabled = showSettings) { showSettings = false }
-
-    if (showSettings) {
-        SettingsScreen(
-            repository = settingsRepository,
-            onBack = { showSettings = false },
-            onRefreshModels = { viewModel.refreshModels() }
-        )
-    } else if (engine == null) {
+    if (engine == null) {
         LibraryScreen(
             viewModel = viewModel,
             onOpenPdf = { uri -> viewModel.openDocument(uri) },
-            onSettingsClick = { showSettings = true }
+            isDark = dark,
+            onToggleTheme = { viewModel.toggleAppTheme(dark) }
         )
     } else {
         PdfViewerScreen(

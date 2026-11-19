@@ -7,10 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.RectF
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.blprkfgre.prettydamnfine.ai.GroqSearchService
-import com.blprkfgre.prettydamnfine.ai.SemanticSearchResult
 import com.blprkfgre.prettydamnfine.data.DocumentRepository
 import com.blprkfgre.prettydamnfine.data.PdfDocumentItem
 import com.blprkfgre.prettydamnfine.pdf.Bookmark
@@ -20,7 +19,7 @@ import com.blprkfgre.prettydamnfine.pdf.PdfEngine
 import com.blprkfgre.prettydamnfine.pdf.ReadingTheme
 import com.blprkfgre.prettydamnfine.pdf.SearchResult
 import com.blprkfgre.prettydamnfine.pdf.TextExtractor
-import com.blprkfgre.prettydamnfine.ui.settings.SettingsRepository
+import com.blprkfgre.prettydamnfine.ui.theme.AppThemeMode
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,8 +35,6 @@ data class TextSelection(
 class PdfViewerViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = DocumentRepository(application)
     private val textExtractor = TextExtractor()
-    private val settingsRepository = SettingsRepository(application)
-    private val groqSearchService = GroqSearchService(application)
 
     val libraryDocuments = MutableStateFlow<List<PdfDocumentItem>>(emptyList())
 
@@ -51,11 +48,28 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     // Cancellable background work, tied to the currently open document.
     private var textExtractionJob: Job? = null
-    private var semanticSearchJob: Job? = null
     private var outlineJob: Job? = null
 
     private val _isReadMode = MutableStateFlow(false)
     val isReadMode = _isReadMode.asStateFlow()
+
+    private val _appThemeMode = MutableStateFlow(
+        when (prefs.getString("app_theme_mode", "SYSTEM")) {
+            "LIGHT" -> AppThemeMode.LIGHT
+            "DARK" -> AppThemeMode.DARK
+            else -> AppThemeMode.SYSTEM
+        }
+    )
+    val appThemeMode = _appThemeMode.asStateFlow()
+
+    fun setAppThemeMode(mode: AppThemeMode) {
+        _appThemeMode.value = mode
+        prefs.edit().putString("app_theme_mode", mode.name).apply()
+    }
+
+    fun toggleAppTheme(currentIsDark: Boolean) {
+        setAppThemeMode(if (currentIsDark) AppThemeMode.LIGHT else AppThemeMode.DARK)
+    }
 
     private val _currentTheme = MutableStateFlow(ReadingTheme.LIGHT)
     val currentTheme = _currentTheme.asStateFlow()
@@ -87,19 +101,6 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _searchHighlights = MutableStateFlow<Map<Int, List<RectF>>>(emptyMap())
     val searchHighlights = _searchHighlights.asStateFlow()
-
-    // --- Semantic Search ---
-    private val _semanticSearchResults = MutableStateFlow<List<SemanticSearchResult>>(emptyList())
-    val semanticSearchResults = _semanticSearchResults.asStateFlow()
-
-    private val _isSemanticSearching = MutableStateFlow(false)
-    val isSemanticSearching = _isSemanticSearching.asStateFlow()
-
-    private val _semanticSearchError = MutableStateFlow<String?>(null)
-    val semanticSearchError = _semanticSearchError.asStateFlow()
-
-    private val _showSemanticSearch = MutableStateFlow(false)
-    val showSemanticSearch = _showSemanticSearch.asStateFlow()
 
     // --- Selection ---
     private val _textSelection = MutableStateFlow<TextSelection?>(null)
@@ -215,9 +216,6 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 _textSelection.value = null
                 _selectedText.value = ""
                 _pageCharPositions.value = emptyMap()
-                _semanticSearchResults.value = emptyList()
-                _semanticSearchError.value = null
-                _showSemanticSearch.value = false
 
                 startTextExtraction(newEngine)
             } catch (e: Exception) {
@@ -229,10 +227,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun cancelDocumentWork() {
         textExtractionJob?.cancel()
-        semanticSearchJob?.cancel()
         outlineJob?.cancel()
         textExtractionJob = null
-        semanticSearchJob = null
         outlineJob = null
     }
 
@@ -278,15 +274,30 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         _bookmarks.value = emptyList()
         _outline.value = emptyList()
         _showOverview.value = false
-        _semanticSearchResults.value = emptyList()
-        _semanticSearchError.value = null
-        _isSemanticSearching.value = false
         _isExtractingText.value = false
-        _showSemanticSearch.value = false
     }
 
     fun removeDocument(uri: Uri) {
         repository.removeDocument(uri)
+        refreshLibrary()
+        refreshRecentDocuments()
+    }
+
+    /** Removes selected files from the device (when permitted) and from the library. */
+    fun deleteDocumentsForever(uris: List<Uri>) {
+        val context = getApplication<Application>()
+        uris.forEach { uri ->
+            try {
+                if (uri.scheme == "file") {
+                    uri.path?.let { java.io.File(it).delete() }
+                } else {
+                    DocumentsContract.deleteDocument(context.contentResolver, uri)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            repository.removeDocument(uri)
+        }
         refreshLibrary()
         refreshRecentDocuments()
     }
@@ -466,88 +477,6 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         fetchHighlightsForPage(pageIndex, _searchQuery.value)
     }
 
-    // --- Semantic Search ---
-    fun showSemanticSearch() {
-        _showSemanticSearch.value = true
-    }
-
-    fun dismissSemanticSearch() {
-        _showSemanticSearch.value = false
-    }
-
-    fun performSemanticSearch(query: String) {
-        if (query.isBlank()) return
-        
-        val apiKey = settingsRepository.apiKey
-        if (apiKey.isBlank()) {
-            _semanticSearchError.value = "Please set your Groq API key in Settings first"
-            return
-        }
-
-        val pageTexts = _extractedText.value
-        val extractedCount = pageTexts.size
-        
-        if (extractedCount == 0) {
-            _semanticSearchError.value = "Please wait for the document to load completely"
-            return
-        }
-        
-        // Show warning if extraction is still in progress
-        val engine = _engine.value
-        if (engine != null && extractedCount < engine.pageCount && _isExtractingText.value) {
-            _semanticSearchError.value = "Still loading... ($extractedCount/${engine.pageCount} pages). Try again soon."
-            return
-        }
-
-        semanticSearchJob?.cancel()
-        val searchEngine = _engine.value
-        semanticSearchJob = viewModelScope.launch {
-            _isSemanticSearching.value = true
-            _semanticSearchError.value = null
-
-            val model = settingsRepository.selectedModel
-
-            val result = groqSearchService.semanticSearch(
-                apiKey = apiKey,
-                query = query,
-                pageTexts = pageTexts,
-                model = model
-            )
-
-            // Ignore results if the user navigated away while the request was in flight.
-            if (_engine.value !== searchEngine) {
-                _isSemanticSearching.value = false
-                return@launch
-            }
-
-            result.onSuccess { results ->
-                _semanticSearchResults.value = results
-                if (results.isNotEmpty()) {
-                    // Navigate only if answer was found
-                    val rawPage = results[0].pageNumber
-                    val engine = _engine.value
-                    val maxPage = engine?.pageCount ?: 1
-
-                    // Only navigate if page is valid and AI actually found something
-                    val content = results[0].content.lowercase()
-                    val foundAnswer = !content.contains("could not find") &&
-                                      !content.contains("not found") &&
-                                      !content.contains("don't have") &&
-                                      !content.contains("no information")
-
-                    if (foundAnswer && rawPage in 1..maxPage) {
-                        val pageIndex = (rawPage - 1).coerceIn(0, maxPage - 1)
-                        requestNavigateToPage(pageIndex)
-                    }
-                }
-            }.onFailure { error ->
-                _semanticSearchError.value = error.message ?: "Search failed"
-            }
-
-            _isSemanticSearching.value = false
-        }
-    }
-
     // --- Selection ---
     fun fetchCharPositionsIfNeeded(pageIndex: Int) {
         if (_pageCharPositions.value.containsKey(pageIndex)) return
@@ -626,6 +555,25 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /** Removes a highlight covering the currently selected text. */
+    fun removeHighlightFromSelection() {
+        val selection = _textSelection.value ?: return
+        val engine = _engine.value ?: return
+        val chars = _pageCharPositions.value[selection.pageIndex] ?: return
+        val start = minOf(selection.startCharIndex, selection.endCharIndex)
+        val end = maxOf(selection.startCharIndex, selection.endCharIndex)
+        val rects = (start..end).mapNotNull { chars.getOrNull(it)?.rect }
+        val removed = engine.removeAnnotationsInRects(selection.pageIndex, rects)
+        if (removed > 0) {
+            engine.invalidatePage(selection.pageIndex)
+            _annotationRevision.value++
+            _toastMessage.value = "Highlight removed — save to keep the change"
+            clearSelection()
+        } else {
+            _toastMessage.value = "No highlight found on this selection"
+        }
+    }
+
     /** Writes annotation edits back to the app-private working copy of the PDF. */
     fun saveAnnotations() {
         val engine = _engine.value ?: return
@@ -666,45 +614,6 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun clearToast() {
         _toastMessage.value = null
-    }
-
-    fun clearSemanticSearchError() {
-        _semanticSearchError.value = null
-    }
-    
-    fun setModel(model: String) {
-        settingsRepository.selectedModel = model
-    }
-
-    /** Pulls the currently available Groq models so retired IDs are never offered. */
-    fun refreshModels() {
-        val key = settingsRepository.apiKey
-        if (key.isBlank()) {
-            _toastMessage.value = "Set your Groq API key first"
-            return
-        }
-        viewModelScope.launch {
-            groqSearchService.fetchAvailableModels(key)
-                .onSuccess { ids ->
-                    if (ids.isEmpty()) {
-                        _toastMessage.value = "Groq returned no models"
-                        return@onSuccess
-                    }
-                    settingsRepository.availableModelIds = ids
-                    val current = settingsRepository.selectedModel
-                    if (current != "random" && current !in ids) {
-                        settingsRepository.selectedModel = if (SettingsRepository.DEFAULT_MODEL in ids) {
-                            SettingsRepository.DEFAULT_MODEL
-                        } else {
-                            ids.first()
-                        }
-                    }
-                    _toastMessage.value = "Models refreshed (${ids.size})"
-                }
-                .onFailure { error ->
-                    _toastMessage.value = error.message ?: "Could not refresh models"
-                }
-        }
     }
 
     // --- Session persistence ---

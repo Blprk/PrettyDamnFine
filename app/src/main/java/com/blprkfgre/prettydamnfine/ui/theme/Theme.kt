@@ -12,6 +12,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
+enum class AppThemeMode { SYSTEM, LIGHT, DARK }
+
 private val DarkColorScheme = darkColorScheme(
     primary = PrimaryDark,
     onPrimary = OnPrimaryDark,

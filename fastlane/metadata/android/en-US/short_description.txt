@@ -1,1 +1,1 @@
-A minimal, gesture-driven PDF reader with AI semantic search.
+A fast, private PDF reader with highlights and sharing.
