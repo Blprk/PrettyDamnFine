@@ -287,7 +287,7 @@ fun OutlineSheet(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    items(outline) { item ->
+                    items(flattenOutline(outline)) { item ->
                         OutlineItemView(
                             item = item,
                             onClick = { onItemSelected(item) }
@@ -297,6 +297,18 @@ fun OutlineSheet(
             }
         }
     }
+}
+
+private fun flattenOutline(items: List<OutlineItem>): List<OutlineItem> {
+    val result = mutableListOf<OutlineItem>()
+    fun addAll(list: List<OutlineItem>) {
+        for (item in list) {
+            result.add(item)
+            addAll(item.children)
+        }
+    }
+    addAll(items)
+    return result
 }
 
 @Composable

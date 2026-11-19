@@ -26,6 +26,59 @@ class GroqSearchService(private val context: Context) {
         .build()
 
     /**
+     * Scores every page by how often the query's meaningful terms occur, then
+     * returns the most relevant pages first. When nothing matches, falls back to
+     * an even sample across the document so broad questions still get context.
+     */
+    private fun rankPages(query: String, pageTexts: Map<Int, String>): List<Pair<Int, String>> {
+        val stopWords = setOf(
+            "the", "a", "an", "is", "are", "was", "were", "of", "to", "in", "on",
+            "for", "and", "or", "with", "this", "that", "these", "those", "it",
+            "its", "as", "at", "by", "from", "be", "been", "do", "does", "did",
+            "what", "when", "where", "which", "who", "how", "why", "can", "could",
+            "would", "should", "about", "find", "show", "tell", "me", "please",
+            "document", "pdf", "page"
+        )
+        val terms = query.lowercase()
+            .split(Regex("[^a-z0-9]+"))
+            .filter { it.length >= 3 && it !in stopWords }
+            .distinct()
+
+        val scored = pageTexts.map { (page, text) ->
+            val lower = text.lowercase()
+            var score = 0
+            for (term in terms) {
+                var from = 0
+                var count = 0
+                while (count < 3) {
+                    val idx = lower.indexOf(term, from)
+                    if (idx < 0) break
+                    count++
+                    from = idx + term.length
+                }
+                score += count
+            }
+            page to score
+        }
+
+        val relevant = scored
+            .filter { it.second > 0 }
+            .sortedWith(compareByDescending<Pair<Int, Int>> { it.second }.thenBy { it.first })
+
+        if (relevant.isNotEmpty()) {
+            return relevant.map { it.first to (pageTexts[it.first] ?: "") }
+        }
+
+        val sorted = pageTexts.entries.sortedBy { it.key }
+        if (sorted.isEmpty()) return emptyList()
+        val budget = 8
+        val step = maxOf(1, sorted.size / budget)
+        return sorted.filterIndexed { index, _ -> index % step == 0 }
+            .take(budget)
+            .map { it.key to it.value }
+    }
+
+    /**
      * Performs semantic search using Groq API
      */
     suspend fun semanticSearch(
@@ -43,30 +96,35 @@ class GroqSearchService(private val context: Context) {
         }
 
         try {
-            val allPages = pageTexts.entries.sortedBy { it.key }
-            
-            val maxContextChars = 8000
+            // Rank pages locally by query-term overlap so the model sees the parts of
+            // the document that actually matter, not just the first few pages.
+            val rankedPages = rankPages(query, pageTexts)
+            val maxContextChars = 14000
+            val maxCharsPerPage = 2400
             val contextText = buildString {
-                for ((page, text) in allPages) {
+                for ((page, text) in rankedPages) {
                     if (length >= maxContextChars) break
                     if (text.isBlank()) continue
+                    val remaining = maxOf(0, minOf(maxContextChars - length, maxCharsPerPage))
+                    if (remaining < 40) break
                     append("--- Page ${page + 1} ---\n")
-                    val remaining = maxContextChars - length
-                    if (remaining <= 0) break
                     append(text.take(remaining).trim())
                     append("\n\n")
                 }
             }
 
             val prompt = """
-Search the document below and answer the question.
+You answer questions using ONLY the numbered document excerpts below.
 
-Document:
+Document excerpts:
 $contextText
 
 Question: $query
 
-If found, say "Page X: [answer]". If not found, say "Not found".
+Rules:
+- Base your answer strictly on the excerpts. Do not use outside knowledge.
+- If the answer is present, start with the exact format "Page X: " (X = the excerpt's page number) followed by a concise answer.
+- If the answer is not present in any excerpt, reply exactly "Not found".
             """.trimIndent()
 
             val effectiveModel = if (model == "random") {

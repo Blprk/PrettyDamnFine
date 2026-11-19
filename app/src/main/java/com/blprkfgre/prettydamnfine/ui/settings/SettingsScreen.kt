@@ -81,6 +81,14 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    if (!repository.isKeyPersistent) {
+                        Text(
+                            text = "Secure storage is unavailable on this device. The key is kept for this session only — re-enter it after a restart.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                     
                     OutlinedTextField(
                         value = apiKey,

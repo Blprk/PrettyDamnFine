@@ -4,18 +4,32 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import android.util.LruCache
-import kotlinx.coroutines.*
+import com.artifex.mupdf.fitz.Cookie
+import com.artifex.mupdf.fitz.Document
+import com.artifex.mupdf.fitz.Matrix
+import com.artifex.mupdf.fitz.Outline
+import com.artifex.mupdf.fitz.PDFAnnotation
+import com.artifex.mupdf.fitz.PDFDocument
+import com.artifex.mupdf.fitz.PDFPage
+import com.artifex.mupdf.fitz.Quad
+import com.artifex.mupdf.fitz.Rect
+import android.graphics.RectF
+import com.artifex.mupdf.fitz.android.AndroidDrawDevice
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
-import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
 enum class ReadingTheme {
@@ -35,246 +49,245 @@ data class OutlineItem(
     val children: List<OutlineItem> = emptyList()
 )
 
-class PdfEngine(private val context: Context, val uri: Uri) {
-    private var fileDescriptor: ParcelFileDescriptor? = null
-    private var pdfRenderer: PdfRenderer? = null
+/**
+ * MuPDF-backed PDF engine.
+ *
+ * MuPDF native objects are not thread-safe, so every native call is made under
+ * [nativeLock]. The coroutine [mutex] additionally protects the bitmap caches.
+ */
+class PdfEngine private constructor(
+    private val context: Context,
+    val uri: Uri,
+    private val cacheFile: File
+) {
+    private var document: Document? = null
+    private val nativeLock = Any()
     private val mutex = Mutex()
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private val aspectRatioCache = mutableMapOf<Int, Float>()
     private var thumbnailCache: LruCache<Int, Bitmap>? = null
     private var bitmapCache: LruCache<String, Bitmap>? = null
-    private val bitmapPool = Collections.synchronizedList(mutableListOf<Bitmap>())
-    
     private val prefetchJobs = ConcurrentHashMap<Int, Job>()
 
-    val theme = ReadingTheme.LIGHT
     private val bookmarks = mutableListOf<Bookmark>()
     private var outline: List<OutlineItem> = emptyList()
 
     init {
-        try {
-            val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-            val cacheSize = minOf(maxMemory / 8, 48 * 1024)
-            
-            bitmapCache = object : LruCache<String, Bitmap>(cacheSize) {
-                override fun sizeOf(key: String, bitmap: Bitmap): Int = bitmap.byteCount / 1024
-                override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
-                    if (evicted) {
-                        releaseBitmap(oldValue)
-                    }
-                }
-            }
-            
-            thumbnailCache = object : LruCache<Int, Bitmap>(100) {
-                override fun sizeOf(key: Int, bitmap: Bitmap): Int = bitmap.byteCount / 1024
-                override fun entryRemoved(evicted: Boolean, key: Int, oldValue: Bitmap, newValue: Bitmap?) {
-                    if (evicted) {
-                        releaseBitmap(oldValue)
-                    }
-                }
-            }
+        val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
+        val cacheSize = minOf(maxMemory / 8, 48 * 1024)
 
-            fileDescriptor = context.contentResolver.openFileDescriptor(uri, "r")
-            fileDescriptor?.let {
-                pdfRenderer = PdfRenderer(it)
-                scope.launch { extractOutline() }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        bitmapCache = object : LruCache<String, Bitmap>(cacheSize) {
+            override fun sizeOf(key: String, bitmap: Bitmap): Int = bitmap.byteCount / 1024
+        }
+        thumbnailCache = object : LruCache<Int, Bitmap>(100) {
+            override fun sizeOf(key: Int, bitmap: Bitmap): Int = bitmap.byteCount / 1024
         }
     }
 
-    val pageCount: Int get() = pdfRenderer?.pageCount ?: 0
+    /** Opens the (already cached) file. */
+    private fun open() {
+        synchronized(nativeLock) {
+            document = Document.openDocument(cacheFile.absolutePath)
+            outline = buildOutline()
+        }
+    }
+
+    companion object {
+        /** Copies the content-URI into app cache, then opens it with MuPDF. */
+        suspend fun create(context: Context, uri: Uri): PdfEngine = withContext(Dispatchers.IO) {
+            // filesDir (not cacheDir) so annotation edits survive app restarts.
+            val dir = File(context.filesDir, "pdf").apply { mkdirs() }
+            val file = File(dir, "${uri.toString().hashCode()}.pdf")
+            if (!file.exists() || file.length() == 0L) {
+                val input = context.contentResolver.openInputStream(uri)
+                    ?: throw IOException("Cannot open the selected file")
+                FileOutputStream(file).use { out ->
+                    input.use { it.copyTo(out, 64 * 1024) }
+                }
+            }
+            val engine = PdfEngine(context, uri, file)
+            engine.open()
+            engine
+        }
+    }
+
+    /** Raw document handle, for TextExtractor. Only touch it under [withDocument]. */
+    internal val rawDocument: Document? get() = document
+
+    internal fun <T> withDocument(block: (Document) -> T): T? {
+        val doc = document ?: return null
+        return synchronized(nativeLock) { block(doc) }
+    }
+
+    val needsPassword: Boolean
+        get() = synchronized(nativeLock) { document?.needsPassword() ?: false }
+
+    fun authenticate(password: String): Boolean {
+        return synchronized(nativeLock) {
+            val ok = document?.authenticatePassword(password) ?: false
+            if (ok) outline = buildOutline()
+            ok
+        }
+    }
+
+    val pageCount: Int
+        get() = if (needsPassword) 0 else synchronized(nativeLock) {
+            try { document?.countPages() ?: 0 } catch (e: Exception) { 0 }
+        }
+
+    val isOpen: Boolean get() = document != null && !needsPassword && pageCount > 0
 
     fun getBookmarks(): List<Bookmark> = bookmarks.toList()
-    
+
     fun addBookmark(pageIndex: Int, title: String) {
         bookmarks.removeAll { it.pageIndex == pageIndex }
         bookmarks.add(Bookmark(pageIndex, title))
         bookmarks.sortBy { it.pageIndex }
     }
-    
+
     fun removeBookmark(pageIndex: Int) {
         bookmarks.removeAll { it.pageIndex == pageIndex }
     }
-    
+
+    fun clearBookmarks() {
+        bookmarks.clear()
+    }
+
     fun isBookmarked(pageIndex: Int): Boolean = bookmarks.any { it.pageIndex == pageIndex }
-    
+
     fun getOutline(): List<OutlineItem> = outline
 
-    private suspend fun extractOutline() = withContext(Dispatchers.IO) {
-        // Native PdfRenderer does not expose bookmark/outline trees.
-        // Outline stays empty unless a third-party library is added in a future phase.
-        outline = emptyList()
+    private fun buildOutline(): List<OutlineItem> {
+        val doc = document ?: return emptyList()
+        val roots = try { doc.loadOutline() } catch (e: Exception) { null } ?: return emptyList()
+        return mapOutline(roots, 0)
     }
 
-    fun getPageAspectRatioCached(pageIndex: Int): Float {
-        return aspectRatioCache[pageIndex] ?: 0.707f
+    private fun mapOutline(items: Array<Outline>?, level: Int): List<OutlineItem> {
+        if (items == null) return emptyList()
+        val result = mutableListOf<OutlineItem>()
+        for (item in items) {
+            val page = try {
+                document?.resolveLink(item)?.let { document?.pageNumberFromLocation(it) }
+            } catch (e: Exception) {
+                null
+            }
+            val children = mapOutline(item.down, level + 1)
+            if (page != null && page >= 0) {
+                result.add(OutlineItem(item.title ?: "Untitled", page, level, children))
+            } else {
+                result.addAll(children)
+            }
+        }
+        return result
     }
+
+    fun getPageAspectRatioCached(pageIndex: Int): Float =
+        aspectRatioCache[pageIndex] ?: 0.707f
 
     suspend fun getPageAspectRatio(pageIndex: Int): Float = withContext(Dispatchers.IO) {
         aspectRatioCache[pageIndex]?.let { return@withContext it }
-
         mutex.withLock {
             aspectRatioCache[pageIndex]?.let { return@withLock it }
-
-            val renderer = pdfRenderer ?: return@withLock 0.707f
-            if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withLock 0.707f
-            val page = renderer.openPage(pageIndex)
-            val aspect = page.width.toFloat() / page.height.toFloat()
-            page.close()
-            aspectRatioCache[pageIndex] = aspect
-            aspect
+            val ratio = synchronized(nativeLock) {
+                val doc = document ?: return@synchronized 0.707f
+                if (pageIndex !in 0 until doc.countPages()) return@synchronized 0.707f
+                val page = doc.loadPage(pageIndex)
+                try {
+                    val b = page.bounds
+                    (b.x1 - b.x0) / (b.y1 - b.y0)
+                } finally {
+                    page.destroy()
+                }
+            }
+            aspectRatioCache[pageIndex] = ratio
+            ratio
         }
     }
 
-    suspend fun renderPage(pageIndex: Int, targetWidth: Int, targetHeight: Int, theme: ReadingTheme = ReadingTheme.LIGHT): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun renderPage(
+        pageIndex: Int,
+        targetWidth: Int,
+        targetHeight: Int,
+        theme: ReadingTheme = ReadingTheme.LIGHT
+    ): Bitmap? = withContext(Dispatchers.IO) {
         val cacheKey = "${pageIndex}_${targetWidth}_${targetHeight}_${theme.name}"
-
         bitmapCache?.get(cacheKey)?.let { return@withContext it }
 
         mutex.withLock {
             bitmapCache?.get(cacheKey)?.let { return@withLock it }
 
-            val renderer = pdfRenderer ?: return@withLock null
-            if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withLock null
-
-            var safeWidth = targetWidth.coerceAtMost(2048)
-            var safeHeight = targetHeight.coerceAtMost(2048)
-
-            if (safeWidth > 2048 || safeHeight > 2048) {
-                val ratio = minOf(2048f / safeWidth, 2048f / safeHeight)
-                safeWidth = (safeWidth * ratio).toInt()
-                safeHeight = (safeHeight * ratio).toInt()
+            val rendered = synchronized(nativeLock) {
+                val doc = document ?: return@synchronized null
+                if (pageIndex !in 0 until doc.countPages()) return@synchronized null
+                val page = doc.loadPage(pageIndex)
+                try {
+                    val bounds = page.bounds
+                    val pageW = maxOf(1f, bounds.x1 - bounds.x0)
+                    val pageH = maxOf(1f, bounds.y1 - bounds.y0)
+                    // Cap bitmap dimensions to stay memory-safe on huge pages.
+                    val scale = minOf(
+                        targetWidth / pageW,
+                        targetHeight / pageH,
+                        2048f / pageW,
+                        2048f / pageH
+                    ).coerceAtLeast(0.0001f)
+                    val ctm = Matrix(scale)
+                    // drawPage fills the page background and returns an ARGB_8888 bitmap.
+                    AndroidDrawDevice.drawPage(page, ctm)
+                } catch (e: Exception) {
+                    null
+                } finally {
+                    page.destroy()
+                }
             }
+            if (rendered == null) return@withLock null
 
-            safeWidth = safeWidth.coerceAtLeast(1)
-            safeHeight = safeHeight.coerceAtLeast(1)
-
-            val bitmap = acquireBitmap(safeWidth, safeHeight)
-            
-            // Always render on white to ensure black text and white background are captured before inversion
-            bitmap.eraseColor(Color.WHITE)
-
-            val page = renderer.openPage(pageIndex)
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-            page.close()
-
-            // Apply theme post-processing
             val themedBitmap = if (theme != ReadingTheme.LIGHT) {
-                val t = applyTheme(bitmap, theme)
-                releaseBitmap(bitmap)
-                t
+                applyTheme(rendered, theme)
             } else {
-                bitmap
+                rendered
             }
 
             bitmapCache?.put(cacheKey, themedBitmap)
-
             if (!aspectRatioCache.containsKey(pageIndex)) {
-                aspectRatioCache[pageIndex] = safeWidth.toFloat() / safeHeight.toFloat()
+                aspectRatioCache[pageIndex] = rendered.width.toFloat() / rendered.height.toFloat()
             }
-
             themedBitmap
         }
     }
 
-    private fun applyTheme(bitmap: Bitmap, theme: ReadingTheme): Bitmap {
-        val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-        val canvas = Canvas(result)
-        val paint = Paint()
-
-        when (theme) {
-            ReadingTheme.DARK -> {
-                // Comfortable dark mode matrix (not pure inversion)
-                // Inverts but keeps text slightly softer than pure white
-                val invertMatrix = android.graphics.ColorMatrix(floatArrayOf(
-                    -0.85f, 0f,    0f,    0f, 235f,
-                    0f,    -0.85f, 0f,    0f, 235f,
-                    0f,    0f,    -0.85f, 0f, 235f,
-                    0f,    0f,    0f,     1f, 0f
-                ))
-                paint.colorFilter = android.graphics.ColorMatrixColorFilter(invertMatrix)
-                canvas.drawBitmap(bitmap, 0f, 0f, paint)
-            }
-            ReadingTheme.SEPIA -> {
-                // Warm sepia tint matrix
-                val sepiaMatrix = android.graphics.ColorMatrix(floatArrayOf(
-                    0.393f, 0.769f, 0.189f, 0f, 0f,
-                    0.349f, 0.686f, 0.168f, 0f, 0f,
-                    0.272f, 0.534f, 0.131f, 0f, 0f,
-                    0f,     0f,     0f,     1f, 0f
-                ))
-                paint.colorFilter = android.graphics.ColorMatrixColorFilter(sepiaMatrix)
-                canvas.drawBitmap(bitmap, 0f, 0f, paint)
-            }
-            else -> {}
+    suspend fun renderThumbnail(pageIndex: Int, size: Int = 256): Bitmap? {
+        thumbnailCache?.get(pageIndex)?.let { return it }
+        val ratio = getPageAspectRatio(pageIndex)
+        val w: Int
+        val h: Int
+        if (ratio >= 1f) {
+            w = size
+            h = (size / ratio).toInt().coerceAtLeast(1)
+        } else {
+            h = size
+            w = (size * ratio).toInt().coerceAtLeast(1)
         }
-        
-        return result
-    }
-
-    suspend fun renderThumbnail(pageIndex: Int, size: Int = 256): Bitmap? = withContext(Dispatchers.IO) {
-        thumbnailCache?.get(pageIndex)?.let { return@withContext it }
-
-        mutex.withLock {
-            thumbnailCache?.get(pageIndex)?.let { return@withLock it }
-
-            val renderer = pdfRenderer ?: return@withLock null
-            if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withLock null
-
-            val page = renderer.openPage(pageIndex)
-            val aspect = page.width.toFloat() / page.height.toFloat()
-            
-            val width: Int
-            val height: Int
-            if (aspect > 1) {
-                width = size
-                height = (size / aspect).toInt()
-            } else {
-                height = size
-                width = (size * aspect).toInt()
-            }
-
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            bitmap.eraseColor(Color.WHITE)
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-            page.close()
-
-            thumbnailCache?.put(pageIndex, bitmap)
-            bitmap
-        }
+        val bitmap = renderPage(pageIndex, w, h) ?: return null
+        thumbnailCache?.put(pageIndex, bitmap)
+        return bitmap
     }
 
     suspend fun prefetchPages(currentPage: Int, range: Int = 3) = withContext(Dispatchers.IO) {
-        val pagesToPrefetch = buildList {
-            for (i in -range..range) {
-                val page = currentPage + i
-                if (page in 0 until pageCount && !prefetchJobs.containsKey(page)) {
-                    add(page)
-                }
-            }
-        }
+        val pages = (-range..range).map { currentPage + it }
+            .filter { it in 0 until pageCount && !prefetchJobs.containsKey(it) }
 
-        pagesToPrefetch.forEach { page ->
+        pages.forEach { page ->
             if (!prefetchJobs.containsKey(page)) {
-                val job = scope.launch {
-                    renderPage(page, 1024, 1448)
-                }
-                prefetchJobs[page] = job
+                prefetchJobs[page] = scope.launch { renderPage(page, 1024, 1448) }
             }
         }
 
-        // Cancel far-away prefetch jobs
         prefetchJobs.entries.removeIf { (page, job) ->
-            val isFar = kotlin.math.abs(page - currentPage) > range * 2
-            if (isFar) {
-                job.cancel()
-                true
-            } else {
-                false
-            }
+            val far = kotlin.math.abs(page - currentPage) > range * 2
+            if (far) { job.cancel(); true } else false
         }
     }
 
@@ -283,9 +296,7 @@ class PdfEngine(private val context: Context, val uri: Uri) {
         prefetchJobs.clear()
     }
 
-    /**
-     * Renders a specific region (tile) of a page.
-     */
+    /** Renders a viewport tile using a cancellable MuPDF cookie. */
     suspend fun renderTile(
         pageIndex: Int,
         tileWidth: Int,
@@ -300,58 +311,153 @@ class PdfEngine(private val context: Context, val uri: Uri) {
 
         mutex.withLock {
             bitmapCache?.get(cacheKey)?.let { return@withLock it }
+            val rendered = synchronized(nativeLock) {
+                val doc = document ?: return@synchronized null
+                if (pageIndex !in 0 until doc.countPages()) return@synchronized null
+                val page = doc.loadPage(pageIndex)
+                val bitmap = Bitmap.createBitmap(tileWidth, tileHeight, Bitmap.Config.ARGB_8888)
+                val device = AndroidDrawDevice(
+                    bitmap,
+                    -tileOffsetX.toInt(), -tileOffsetY.toInt(),
+                    0, 0, tileWidth, tileHeight,
+                    false
+                )
+                val cookie = Cookie()
+                try {
+                    page.run(device, Matrix(zoom), cookie)
+                    bitmap
+                } catch (e: Exception) {
+                    null
+                } finally {
+                    device.close()
+                    device.destroy()
+                    cookie.destroy()
+                    page.destroy()
+                }
+            } ?: return@withLock null
 
-            val renderer = pdfRenderer ?: return@withLock null
-            if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withLock null
-
-            val bitmap = acquireBitmap(tileWidth, tileHeight)
-            
-            // Always render on white to ensure black text and white background are captured before inversion
-            bitmap.eraseColor(Color.WHITE)
-
-            val page = renderer.openPage(pageIndex)
-
-            val matrix = Matrix()
-            matrix.postScale(zoom, zoom)
-            matrix.postTranslate(-tileOffsetX, -tileOffsetY)
-
-            page.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-            page.close()
-
-            // Apply theme post-processing to tiles
-            val themedBitmap = if (theme != ReadingTheme.LIGHT) {
-                val t = applyTheme(bitmap, theme)
-                if (t != bitmap) releaseBitmap(bitmap)
-                t
-            } else {
-                bitmap
-            }
-
-            bitmapCache?.put(cacheKey, themedBitmap)
-            themedBitmap
+            val themed = if (theme != ReadingTheme.LIGHT) applyTheme(rendered, theme) else rendered
+            bitmapCache?.put(cacheKey, themed)
+            themed
         }
     }
 
-    private fun acquireBitmap(width: Int, height: Int): Bitmap {
-        synchronized(bitmapPool) {
-            val it = bitmapPool.iterator()
-            while (it.hasNext()) {
-                val b = it.next()
-                if (b.width == width && b.height == height && !b.isRecycled) {
-                    it.remove()
-                    return b
-                }
+    private fun applyTheme(bitmap: Bitmap, theme: ReadingTheme): Bitmap {
+        val result = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(result)
+        val paint = Paint()
+        when (theme) {
+            ReadingTheme.DARK -> {
+                val matrix = android.graphics.ColorMatrix(floatArrayOf(
+                    -0.85f, 0f, 0f, 0f, 235f,
+                    0f, -0.85f, 0f, 0f, 235f,
+                    0f, 0f, -0.85f, 0f, 235f,
+                    0f, 0f, 0f, 1f, 0f
+                ))
+                paint.colorFilter = android.graphics.ColorMatrixColorFilter(matrix)
+                canvas.drawBitmap(bitmap, 0f, 0f, paint)
             }
+            ReadingTheme.SEPIA -> {
+                val matrix = android.graphics.ColorMatrix(floatArrayOf(
+                    0.393f, 0.769f, 0.189f, 0f, 0f,
+                    0.349f, 0.686f, 0.168f, 0f, 0f,
+                    0.272f, 0.534f, 0.131f, 0f, 0f,
+                    0f, 0f, 0f, 1f, 0f
+                ))
+                paint.colorFilter = android.graphics.ColorMatrixColorFilter(matrix)
+                canvas.drawBitmap(bitmap, 0f, 0f, paint)
+            }
+            else -> canvas.drawBitmap(bitmap, 0f, 0f, null)
         }
-        return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        return result
+    }
+
+    /**
+     * Adds a real PDF text annotation (highlight/underline) at normalised page rects.
+     * The edited page is written back to the local working copy by [saveChanges].
+     */
+    fun addTextAnnotation(
+        pageIndex: Int,
+        rects: List<RectF>,
+        type: Int = PDFAnnotation.TYPE_HIGHLIGHT,
+        color: FloatArray = floatArrayOf(1f, 0.84f, 0.2f)
+    ): Boolean = synchronized(nativeLock) {
+        val doc = document as? PDFDocument ?: return@synchronized false
+        if (rects.isEmpty()) return@synchronized false
+        val page = try {
+            doc.loadPage(pageIndex) as? PDFPage
+        } catch (e: Exception) {
+            null
+        } ?: return@synchronized false
+
+        try {
+            val bounds = page.bounds
+            val w = maxOf(1f, bounds.x1 - bounds.x0)
+            val h = maxOf(1f, bounds.y1 - bounds.y0)
+            val quads = rects.map { r ->
+                Quad(
+                    Rect(
+                        bounds.x0 + r.left * w,
+                        bounds.y0 + r.top * h,
+                        bounds.x0 + r.right * w,
+                        bounds.y0 + r.bottom * h
+                    )
+                )
+            }.toTypedArray()
+
+            val annotation = page.createAnnotation(type)
+            annotation.setQuadPoints(quads)
+            annotation.setColor(color)
+            annotation.setOpacity(0.45f)
+            annotation.setContents("Highlighted in PrettyDamnFine")
+            annotation.setAuthor("PrettyDamnFine")
+            annotation.update()
+            annotation.destroy()
+            page.update()
+            true
+        } catch (e: Exception) {
+            false
+        } finally {
+            page.destroy()
+        }
+    }
+
+    /** Drops cached bitmaps for a page so an annotation edit becomes visible. */
+    fun invalidatePage(pageIndex: Int) {
+        bitmapCache?.let { cache ->
+            cache.snapshot().keys
+                .filter { it.startsWith("${pageIndex}_") || it.startsWith("tile_${pageIndex}_") }
+                .forEach { cache.remove(it) }
+        }
+    }
+
+    fun annotationCount(pageIndex: Int): Int = synchronized(nativeLock) {
+        val doc = document ?: return@synchronized 0
+        val page = try { doc.loadPage(pageIndex) } catch (e: Exception) { null }
+            ?: return@synchronized 0
+        try {
+            (page as? PDFPage)?.annotations?.size ?: 0
+        } catch (e: Exception) {
+            0
+        } finally {
+            page.destroy()
+        }
     }
 
     fun releaseBitmap(bitmap: Bitmap) {
-        if (bitmapPool.size < 20 && !bitmap.isRecycled) {
-            bitmapPool.add(bitmap)
-        } else if (!bitmap.isRecycled) {
-            bitmap.recycle()
-        }
+        // No-op: a cached bitmap may still be referenced by a Compose Image.
+    }
+
+    /** Path of the local working copy, for saving annotations. */
+    fun workingCopyPath(): String = cacheFile.absolutePath
+
+    /** Saves annotation/form changes made through MuPDF back to the working copy. */
+    fun saveChanges(): Boolean = synchronized(nativeLock) {
+        val pdf = document as? PDFDocument ?: return@synchronized false
+        if (!pdf.hasUnsavedChanges()) return@synchronized false
+        val tmp = File(cacheFile.parentFile, "${cacheFile.name}.saved")
+        pdf.save(tmp.absolutePath, "")
+        if (tmp.exists() && tmp.renameTo(cacheFile)) true else false
     }
 
     fun close() {
@@ -359,11 +465,11 @@ class PdfEngine(private val context: Context, val uri: Uri) {
         cancelPrefetch()
         bitmapCache?.evictAll()
         thumbnailCache?.evictAll()
-        synchronized(bitmapPool) {
-            bitmapPool.forEach { if (!it.isRecycled) it.recycle() }
-            bitmapPool.clear()
+        synchronized(nativeLock) {
+            try { document?.destroy() } catch (e: Exception) { }
+            document = null
         }
-        pdfRenderer?.close()
-        fileDescriptor?.close()
+        aspectRatioCache.clear()
+        bookmarks.clear()
     }
 }

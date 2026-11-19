@@ -5,9 +5,11 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Patterns
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -25,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -62,6 +65,14 @@ fun PdfViewerScreen(
     val outline by viewModel.outline.collectAsState()
     val currentTheme by viewModel.currentTheme.collectAsState()
     val showOutline by viewModel.showOutline.collectAsState()
+    val annotationRevision by viewModel.annotationRevision.collectAsState()
+
+    // "Auto" is a user-facing choice; resolve it to an actual rendering theme.
+    val effectiveTheme = if (currentTheme == ReadingTheme.AUTO) {
+        if (isSystemInDarkTheme()) ReadingTheme.DARK else ReadingTheme.LIGHT
+    } else {
+        currentTheme
+    }
     
     // Semantic search state
     val semanticSearchResults by viewModel.semanticSearchResults.collectAsState()
@@ -76,12 +87,44 @@ fun PdfViewerScreen(
     var showPageJump by remember { mutableStateOf(false) }
     var showBookmarks by remember { mutableStateOf(false) }
     var showThemeSelector by remember { mutableStateOf(false) }
+    var selectionToolbarVisible by remember { mutableStateOf(false) }
+
+    // Delay the selection toolbar so the tap/drag that finishes a selection can
+    // never land on its Copy button and silently "copy" the text.
+    LaunchedEffect(textSelection) {
+        selectionToolbarVisible = false
+        if (textSelection != null) {
+            kotlinx.coroutines.delay(350)
+            selectionToolbarVisible = true
+        }
+    }
+
+    // Back gesture: dismiss the current layer before leaving the document.
+    // Dialogs and modal bottom sheets dismiss themselves via onDismissRequest.
+    val overlayIsOpen = showSemanticSearch || showPageJump || showBookmarks ||
+        showThemeSelector || showOutline || showOverview
+    BackHandler(enabled = true) {
+        when {
+            overlayIsOpen -> Unit
+            isSearchMode -> {
+                isSearchMode = false
+                viewModel.performSearch("")
+            }
+            textSelection != null -> viewModel.clearSelection()
+            else -> onBack()
+        }
+    }
 
     val listState = rememberLazyListState()
 
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+
+    // Read Mode locks horizontal movement: re-center whenever it is enabled.
+    LaunchedEffect(isReadMode) {
+        if (isReadMode) offsetX = 0f
+    }
 
     // Restore session when engine first becomes available
     LaunchedEffect(engine?.uri) {
@@ -153,6 +196,7 @@ fun PdfViewerScreen(
         PageOverviewSheet(
             engine = currentEngine,
             currentPage = currentPage,
+            theme = effectiveTheme,
             onPageSelected = { viewModel.requestNavigateToPage(it) },
             onDismiss = { viewModel.dismissOverview() }
         )
@@ -263,31 +307,35 @@ fun PdfViewerScreen(
                     }
                 }
                 
-                // Text selection FABs
-                if (textSelection != null && selectedText.isNotBlank()) {
-                    // Phone button
+                // Selection actions appear only after the gesture has settled.
+                if (textSelection != null && selectedText.isNotBlank() && selectionToolbarVisible) {
                     if (Patterns.PHONE.matcher(selectedText).matches()) {
                         SmallFloatingActionButton(
-                            onClick = { 
+                            onClick = {
                                 val cleanPhone = selectedText.replace(Regex("[^0-9+]"), "")
                                 context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$cleanPhone")))
                             },
                             containerColor = MaterialTheme.colorScheme.primaryContainer
-                        ) { Icon(Icons.Default.Phone, null) }
+                        ) { Icon(Icons.Default.Phone, "Call") }
                     }
-                    // Email button
                     if (Patterns.EMAIL_ADDRESS.matcher(selectedText).matches()) {
                         SmallFloatingActionButton(
                             onClick = { context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$selectedText"))) },
                             containerColor = MaterialTheme.colorScheme.primaryContainer
-                        ) { Icon(Icons.Default.Email, null) }
+                        ) { Icon(Icons.Default.Email, "Email") }
                     }
-                    // Copy button
+                    SmallFloatingActionButton(
+                        onClick = { viewModel.highlightSelection() },
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                    ) { Icon(Icons.Default.Edit, "Highlight selection") }
                     ExtendedFloatingActionButton(
                         onClick = { viewModel.copySelection() },
                         icon = { Icon(Icons.Default.Check, null) },
                         text = { Text("Copy") }
                     )
+                    SmallFloatingActionButton(onClick = { viewModel.clearSelection() }) {
+                        Icon(Icons.Default.Close, "Clear selection")
+                    }
                 } else if (!isSearchMode && textSelection == null) {
                     FloatingActionButton(
                         onClick = { viewModel.toggleReadMode() },
@@ -309,22 +357,20 @@ fun PdfViewerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(Unit) {
+                        .pointerInput(isReadMode) {
                             detectTransformGestures { _, pan, zoom, _ ->
                                 scale = (scale * zoom).coerceIn(1f, 5f)
-                                
-                                if (scale > 1f) {
-                                    // Calculate max allowed offsets to keep edges clamped
-                                    // Since we scale from the center, the content expands by (scale - 1) * dimension / 2 on each side
+
+                                val maxOffsetY = (maxHeight * scale - maxHeight) / 2
+                                offsetY = if (scale > 1f) {
+                                    (offsetY + pan.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                } else 0f
+
+                                // Read Mode locks horizontal movement to the page center.
+                                offsetX = if (!isReadMode && scale > 1f) {
                                     val maxOffsetX = (maxWidth * scale - maxWidth) / 2
-                                    val maxOffsetY = (maxHeight * scale - maxHeight) / 2
-                                    
-                                    offsetX = (offsetX + pan.x).coerceIn(-maxOffsetX, maxOffsetX)
-                                    offsetY = (offsetY + pan.y).coerceIn(-maxOffsetY, maxOffsetY)
-                                } else {
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                }
+                                    (offsetX + pan.x).coerceIn(-maxOffsetX, maxOffsetX)
+                                } else 0f
                             }
                         }
                 ) {
@@ -346,18 +392,45 @@ fun PdfViewerScreen(
                                 pageIndex = index,
                                 baseWidthPx = maxWidth.toInt(),
                                 scale = 1f,
-                                theme = currentTheme,
+                                theme = effectiveTheme,
                                 highlights = searchHighlights[index] ?: emptyList(),
                                 charPositions = pageCharPositions[index] ?: emptyList(),
                                 selection = if (textSelection?.pageIndex == index) textSelection else null,
                                 onSelectionChange = { start, end -> viewModel.setSelection(index, start, end) },
                                 onRequestCharPositions = { viewModel.fetchCharPositionsIfNeeded(index) },
-                                onClearSelection = { viewModel.clearSelection() }
+                                onClearSelection = { viewModel.clearSelection() },
+                                revision = annotationRevision,
+                                onDoubleTap = { pos ->
+                                    if (scale > 1f) {
+                                        scale = 1f
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    } else {
+                                        val newScale = 2.5f
+                                        scale = newScale
+                                        val maxOffsetX = (maxWidth * newScale - maxWidth) / 2
+                                        val maxOffsetY = (maxHeight * newScale - maxHeight) / 2
+                                        offsetX = ((maxWidth / 2 - pos.x) * (newScale - 1f)).coerceIn(-maxOffsetX, maxOffsetX)
+                                        offsetY = ((maxHeight / 2 - pos.y) * (newScale - 1f)).coerceIn(-maxOffsetY, maxOffsetY)
+                                        if (isReadMode) offsetX = 0f
+                                    }
+                                }
                             )
                             HorizontalDivider(color = Color.DarkGray, thickness = 4.dp)
                         }
                     }
                 }
+            }
+
+            // Fast scrubbing is only useful for longer documents.
+            if (currentEngine.pageCount > 3) {
+                FastScrollbar(
+                    listState = listState,
+                    totalItems = currentEngine.pageCount,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(vertical = 88.dp)
+                )
             }
 
             // Floating Pill Overlay
@@ -419,10 +492,16 @@ fun PdfViewerScreen(
 
                     IconButton(onClick = { viewModel.toggleBookmark(currentPage) }) { 
                         Icon(
-                            imageVector = if (currentEngine.isBookmarked(currentPage)) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            imageVector = if (viewModel.isPageBookmarked(currentPage)) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Bookmark",
-                            tint = if (currentEngine.isBookmarked(currentPage)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            tint = if (viewModel.isPageBookmarked(currentPage)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                         )
+                    }
+
+                    VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
+
+                    IconButton(onClick = { viewModel.saveAnnotations() }) {
+                        Icon(Icons.Default.Check, "Save annotations", tint = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }

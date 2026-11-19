@@ -16,6 +16,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // MuPDF fitz AAR is published by Artifex here, not on Maven Central.
+        maven { url = uri("https://maven.ghostscript.com") }
     }
 }
 

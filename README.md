@@ -5,7 +5,7 @@
 # PrettyDamnFine
 **A Premium, Minimalist Android PDF Reader powered by AI**
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![F-Droid](https://img.shields.io/badge/F--Droid-Ready-success.svg)](https://f-droid.org/)
 
 <br/>
@@ -80,6 +80,9 @@ To use AI features:
 
 ## 📄 License & Legal
 
-This project is licensed under the **Apache License 2.0**. See the [LICENSE](LICENSE) file for more information. 
+This project is licensed under the **GNU Affero General Public License v3.0 or later**. See [LICENSE](LICENSE). Code originally developed under Apache-2.0 is retained under those terms in [LICENSE-APACHE.txt](LICENSE-APACHE.txt); the combined work is distributed under AGPL-3.0 because the PDF engine (MuPDF `fitz`) is AGPL-3.0.
 
 AI capabilities rely on third-party integrations (Groq Inc.). Users are responsible for adhering to corresponding terms of service when passing text into the API.
+
+### Engine & licensing notice
+PDF rendering, text extraction and annotations are powered by **MuPDF** (Artifex Software), licensed under AGPL-3.0-or-later with commercial alternatives available from Artifex. No proprietary SDKs may be added to this application.

@@ -1,12 +1,13 @@
 package com.blprkfgre.prettydamnfine.pdf
 
-import android.content.Context
 import android.graphics.RectF
-import android.net.Uri
-import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
-import com.tom_roush.pdfbox.pdmodel.PDDocument
-import com.tom_roush.pdfbox.text.PDFTextStripper
-import com.tom_roush.pdfbox.text.TextPosition
+import com.artifex.mupdf.fitz.Font
+import com.artifex.mupdf.fitz.Image
+import com.artifex.mupdf.fitz.Point
+import com.artifex.mupdf.fitz.Quad
+import com.artifex.mupdf.fitz.Rect
+import com.artifex.mupdf.fitz.StructuredText
+import com.artifex.mupdf.fitz.StructuredTextWalker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.withContext
@@ -24,178 +25,135 @@ data class CharPos(
     val index: Int
 )
 
-class TextExtractor(private val context: Context) {
+/** Text, search and outline extraction backed by the engine's single MuPDF document. */
+class TextExtractor {
 
-    private var initialized = false
+    fun extractOutline(engine: PdfEngine): List<OutlineItem> = engine.getOutline()
 
-    private fun ensureInitialized() {
-        if (!initialized) {
-            PDFBoxResourceLoader.init(context.applicationContext)
-            initialized = true
-        }
-    }
-
-    /**
-     * Extracts text from all pages in the background, yielding after each page.
-     */
+    /** Extracts text from all pages, yielding after each page so the UI stays responsive. */
     suspend fun extractTextStreaming(
-        uri: Uri,
-        pageCount: Int,
+        engine: PdfEngine,
         onPageExtracted: suspend (Int, String) -> Unit
     ) = withContext(Dispatchers.IO) {
-        ensureInitialized()
-        try {
-            context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                PDDocument.load(inputStream).use { document ->
-                    val stripper = PDFTextStripper()
-                    for (i in 0 until minOf(pageCount, document.numberOfPages)) {
-                        try {
-                            stripper.startPage = i + 1
-                            stripper.endPage = i + 1
-                            val text = stripper.getText(document).trim()
-                            onPageExtracted(i, text)
-                        } catch (e: Exception) {
-                            onPageExtracted(i, "")
-                        }
-                        yield()
+        val pageCount = engine.pageCount
+        for (i in 0 until pageCount) {
+            val text = engine.withDocument { doc ->
+                val page = doc.loadPage(i)
+                try {
+                    val structured = page.toStructuredText()
+                    try {
+                        structured.asText()?.trim() ?: ""
+                    } finally {
+                        structured.destroy()
                     }
+                } catch (e: Exception) {
+                    ""
+                } finally {
+                    page.destroy()
                 }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            } ?: ""
+            onPageExtracted(i, text)
+            yield()
         }
     }
 
-    /**
-     * Get precise character positions for a page.
-     * Used for text selection and hit-testing actionable links.
-     */
-    suspend fun getPageCharPositions(uri: Uri, pageIndex: Int): List<CharPos> = withContext(Dispatchers.IO) {
-        ensureInitialized()
-        val charList = mutableListOf<CharPos>()
-
-        try {
-            context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                PDDocument.load(inputStream).use { document ->
-                    val stripper = object : PDFTextStripper() {
-                        override fun writeString(string: String, textPositions: List<TextPosition>) {
-                            // Loop through text positions and map to CharPos
-                            for (i in textPositions.indices) {
-                                val tp = textPositions[i]
-                                val char = string.getOrElse(i) { ' ' }
-                                
-                                val x = tp.xDirAdj
-                                val y = tp.yDirAdj - tp.heightDir // Top of the character
-                                val w = tp.widthDirAdj
-                                val h = tp.heightDir
-                                
-                                charList.add(CharPos(char, RectF(x, y, x + w, y + h), charList.size))
-                            }
-                        }
-                    }
-                    
-                    stripper.startPage = pageIndex + 1
-                    stripper.endPage = pageIndex + 1
-                    stripper.getText(document)
-                    
-                    // Normalize coordinates to 0..1 based on MediaBox
-                    val page = document.getPage(pageIndex)
-                    val mediaBox = page.mediaBox
-                    val pageWidth = mediaBox.width
-                    val pageHeight = mediaBox.height
-                    
-                    val normalizedChars = charList.map { 
-                        it.copy(
-                            rect = RectF(
-                                it.rect.left / pageWidth,
-                                it.rect.top / pageHeight,
-                                it.rect.right / pageWidth,
-                                it.rect.bottom / pageHeight
+    /** Precise character positions, normalised to 0..1 of the page box. */
+    suspend fun getPageCharPositions(engine: PdfEngine, pageIndex: Int): List<CharPos> =
+        withContext(Dispatchers.IO) {
+            engine.withDocument { doc ->
+                val page = doc.loadPage(pageIndex)
+                val bounds = page.bounds
+                val w = maxOf(1f, bounds.x1 - bounds.x0)
+                val h = maxOf(1f, bounds.y1 - bounds.y0)
+                val chars = mutableListOf<CharPos>()
+                val walker = object : StructuredTextWalker {
+                    override fun onImageBlock(rect: Rect, matrix: com.artifex.mupdf.fitz.Matrix, image: Image) {}
+                    override fun beginTextBlock(rect: Rect, b: Int) {}
+                    override fun endTextBlock() {}
+                    override fun beginLine(rect: Rect, b: Int, dir: Point) {}
+                    override fun endLine() {}
+                    override fun onChar(
+                        unicode: Int,
+                        origin: Point,
+                        font: Font,
+                        size: Float,
+                        quad: Quad,
+                        c: Int,
+                        d: Int,
+                        e: Int
+                    ) {
+                        val r = quad.toRect()
+                        chars.add(
+                            CharPos(
+                                unicode.toChar(),
+                                RectF(
+                                    (r.x0 - bounds.x0) / w,
+                                    (r.y0 - bounds.y0) / h,
+                                    (r.x1 - bounds.x0) / w,
+                                    (r.y1 - bounds.y0) / h
+                                ),
+                                chars.size
                             )
                         )
                     }
-                    return@withContext normalizedChars
+                    override fun beginStruct(name: String, value: String, b: Int) {}
+                    override fun endStruct() {}
+                    override fun onVector(rect: Rect, info: StructuredTextWalker.VectorInfo, b: Int) {}
                 }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+                val structured = page.toStructuredText()
+                try {
+                    structured.walk(walker)
+                } finally {
+                    structured.destroy()
+                    page.destroy()
+                }
+                chars
+            } ?: emptyList()
         }
-        emptyList()
-    }
 
-    /**
-     * Finds the precise coordinates of a query on a specific page.
-     */
-    suspend fun getPageMatchRects(uri: Uri, pageIndex: Int, query: String): List<RectF> = withContext(Dispatchers.IO) {
-        ensureInitialized()
-        val rects = mutableListOf<RectF>()
-        if (query.isBlank()) return@withContext rects
-
-        try {
-            context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                PDDocument.load(inputStream).use { document ->
-                    val stripper = object : PDFTextStripper() {
-                        val lowerQuery = query.lowercase()
-                        
-                        override fun writeString(string: String, textPositions: List<TextPosition>) {
-                            val lowerString = string.lowercase()
-                            var startIdx = 0
-                            while (true) {
-                                val idx = lowerString.indexOf(lowerQuery, startIdx)
-                                if (idx == -1) break
-                                
-                                if (idx + lowerQuery.length <= textPositions.size) {
-                                    val matchPositions = textPositions.subList(idx, idx + lowerQuery.length)
-                                    if (matchPositions.isNotEmpty()) {
-                                        var minX = Float.MAX_VALUE
-                                        var minY = Float.MAX_VALUE
-                                        var maxX = Float.MIN_VALUE
-                                        var maxY = Float.MIN_VALUE
-                                        
-                                        for (tp in matchPositions) {
-                                            minX = minOf(minX, tp.xDirAdj)
-                                            minY = minOf(minY, tp.yDirAdj - tp.heightDir)
-                                            maxX = maxOf(maxX, tp.xDirAdj + tp.widthDirAdj)
-                                            maxY = maxOf(maxY, tp.yDirAdj)
-                                        }
-                                        
-                                        rects.add(RectF(minX, minY, maxX, maxY))
-                                    }
-                                }
-                                startIdx = idx + 1
-                            }
+    /** Precise normalised rectangles for every occurrence of [query] on a page. */
+    suspend fun getPageMatchRects(
+        engine: PdfEngine,
+        pageIndex: Int,
+        query: String
+    ): List<RectF> = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext emptyList()
+        engine.withDocument { doc ->
+            val page = doc.loadPage(pageIndex)
+            val bounds = page.bounds
+            val w = maxOf(1f, bounds.x1 - bounds.x0)
+            val h = maxOf(1f, bounds.y1 - bounds.y0)
+            try {
+                val hits = page.search(query, StructuredText.SEARCH_IGNORE_CASE) ?: emptyArray()
+                hits.mapNotNull { quads ->
+                    if (quads.isEmpty()) null
+                    else {
+                        var x0 = Float.MAX_VALUE
+                        var y0 = Float.MAX_VALUE
+                        var x1 = -Float.MAX_VALUE
+                        var y1 = -Float.MAX_VALUE
+                        quads.forEach { q ->
+                            val r = q.toRect()
+                            x0 = minOf(x0, r.x0); y0 = minOf(y0, r.y0)
+                            x1 = maxOf(x1, r.x1); y1 = maxOf(y1, r.y1)
                         }
-                    }
-                    
-                    stripper.startPage = pageIndex + 1
-                    stripper.endPage = pageIndex + 1
-                    stripper.getText(document)
-                    
-                    val page = document.getPage(pageIndex)
-                    val mediaBox = page.mediaBox
-                    val pageWidth = mediaBox.width
-                    val pageHeight = mediaBox.height
-                    
-                    val normalizedRects = rects.map { r ->
                         RectF(
-                            r.left / pageWidth,
-                            r.top / pageHeight,
-                            r.right / pageWidth,
-                            r.bottom / pageHeight
+                            (x0 - bounds.x0) / w,
+                            (y0 - bounds.y0) / h,
+                            (x1 - bounds.x0) / w,
+                            (y1 - bounds.y0) / h
                         )
                     }
-                    return@withContext normalizedRects
                 }
+            } catch (e: Exception) {
+                emptyList()
+            } finally {
+                page.destroy()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        emptyList()
+        } ?: emptyList()
     }
 
-    /**
-     * Searches cached text for a query string.
-     */
+    /** Searches the cached plain text for a query string. */
     fun search(cachedText: Map<Int, String>, query: String): List<SearchResult> {
         if (query.isBlank()) return emptyList()
         val results = mutableListOf<SearchResult>()

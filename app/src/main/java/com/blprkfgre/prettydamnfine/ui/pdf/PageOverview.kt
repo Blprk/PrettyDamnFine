@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import com.blprkfgre.prettydamnfine.pdf.PdfEngine
+import com.blprkfgre.prettydamnfine.pdf.ReadingTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.Image
@@ -27,6 +28,7 @@ import androidx.compose.ui.layout.ContentScale
 fun PageOverviewSheet(
     engine: PdfEngine,
     currentPage: Int,
+    theme: ReadingTheme = ReadingTheme.LIGHT,
     onPageSelected: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -59,6 +61,7 @@ fun PageOverviewSheet(
                     PageThumbnail(
                         engine = engine,
                         pageIndex = index,
+                        theme = theme,
                         isCurrentPage = index == currentPage,
                         onClick = {
                             onPageSelected(index)
@@ -75,17 +78,20 @@ fun PageOverviewSheet(
 fun PageThumbnail(
     engine: PdfEngine,
     pageIndex: Int,
+    theme: ReadingTheme = ReadingTheme.LIGHT,
     isCurrentPage: Boolean,
     onClick: () -> Unit
 ) {
     var thumbnail by remember { mutableStateOf<ImageBitmap?>(null) }
+    var ratio by remember { mutableFloatStateOf(0.707f) }
 
-    LaunchedEffect(engine, pageIndex) {
+    LaunchedEffect(engine, pageIndex, theme) {
+        val pageRatio = withContext(Dispatchers.IO) { engine.getPageAspectRatio(pageIndex) }
+        ratio = pageRatio
         withContext(Dispatchers.IO) {
-            val ratio = engine.getPageAspectRatio(pageIndex)
             val thumbWidth = 200
-            val thumbHeight = (thumbWidth / ratio).toInt()
-            val bmp = engine.renderPage(pageIndex, thumbWidth, thumbHeight)
+            val thumbHeight = (thumbWidth / pageRatio).toInt()
+            val bmp = engine.renderPage(pageIndex, thumbWidth, thumbHeight, theme)
             bmp?.let { thumbnail = it.asImageBitmap() }
         }
     }
@@ -101,7 +107,7 @@ fun PageThumbnail(
     ) {
         Box(
             modifier = Modifier
-                .aspectRatio(0.707f) // A4 portrait
+                .aspectRatio(ratio)
                 .clip(RoundedCornerShape(8.dp))
                 .border(2.dp, borderColor, RoundedCornerShape(8.dp))
                 .background(Color.White),

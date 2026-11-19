@@ -3,6 +3,7 @@ package com.blprkfgre.prettydamnfine
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -47,6 +48,10 @@ class MainActivity : ComponentActivity() {
 fun MainApp(viewModel: PdfViewerViewModel, settingsRepository: SettingsRepository) {
     val engine by viewModel.engine.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
+
+    // Settings is a top-level overlay; back returns to the library. The viewer
+    // registers its own BackHandler for its sheets/dialogs and for closing the doc.
+    BackHandler(enabled = showSettings) { showSettings = false }
 
     if (showSettings) {
         SettingsScreen(

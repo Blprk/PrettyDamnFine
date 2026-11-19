@@ -40,6 +40,8 @@ fun PdfPage(
     onSelectionChange: (Int, Int) -> Unit = { _, _ -> },
     onRequestCharPositions: () -> Unit = {},
     onClearSelection: () -> Unit = {},
+    onDoubleTap: (Offset) -> Unit = {},
+    revision: Int = 0,
     modifier: Modifier = Modifier
 ) {
     val pageModifier = modifier
@@ -55,7 +57,7 @@ fun PdfPage(
     val targetWidthPx = (baseWidthPx * scale).toInt()
     val targetHeightPx = (baseHeightPx * scale).toInt()
 
-    LaunchedEffect(engine, pageIndex, scale, theme) {
+    LaunchedEffect(engine, pageIndex, scale, theme, revision) {
         if (renderedScale != 0f) delay(150)
         val newBitmap = engine.renderPage(pageIndex, targetWidthPx, targetHeightPx, theme)
         newBitmap?.let {
@@ -86,7 +88,7 @@ fun PdfPage(
                             onClearSelection()
                         }
                     },
-                    onDoubleTap = { }
+                    onDoubleTap = { pos -> onDoubleTap(pos) }
                 )
             }
             .pointerInput(pageIndex, charPositions) {

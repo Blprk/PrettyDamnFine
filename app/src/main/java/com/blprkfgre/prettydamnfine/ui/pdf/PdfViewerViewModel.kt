@@ -21,9 +21,11 @@ import com.blprkfgre.prettydamnfine.pdf.ReadingTheme
 import com.blprkfgre.prettydamnfine.pdf.SearchResult
 import com.blprkfgre.prettydamnfine.pdf.TextExtractor
 import com.blprkfgre.prettydamnfine.ui.settings.SettingsRepository
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 
 data class TextSelection(
     val pageIndex: Int,
@@ -33,7 +35,7 @@ data class TextSelection(
 
 class PdfViewerViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = DocumentRepository(application)
-    private val textExtractor = TextExtractor(application)
+    private val textExtractor = TextExtractor()
     private val settingsRepository = SettingsRepository(application)
     private val groqSearchService = GroqSearchService(application)
 
@@ -46,6 +48,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     val activeDocument = _activeDocument.asStateFlow()
 
     private val prefs = application.getSharedPreferences("pdf_viewer_prefs", Context.MODE_PRIVATE)
+
+    // Cancellable background work, tied to the currently open document.
+    private var textExtractionJob: Job? = null
+    private var semanticSearchJob: Job? = null
+    private var outlineJob: Job? = null
 
     private val _isReadMode = MutableStateFlow(false)
     val isReadMode = _isReadMode.asStateFlow()
@@ -116,6 +123,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage = _toastMessage.asStateFlow()
 
+    // Bumped when annotations change, forcing affected pages to re-render.
+    private val _annotationRevision = MutableStateFlow(0)
+    val annotationRevision = _annotationRevision.asStateFlow()
+
     // --- Recent documents ---
     val recentDocuments = MutableStateFlow<List<PdfDocumentItem>>(emptyList())
 
@@ -156,11 +167,15 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun openDocument(uri: Uri) {
+        // Any work belonging to a previous document is now stale.
+        cancelDocumentWork()
         try {
             _engine.value?.close()
         } catch (e: Exception) {
             // Ignore close errors
         }
+        _engine.value = null
+        _activeDocument.value = null
 
         viewModelScope.launch {
             try {
@@ -168,13 +183,29 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 refreshLibrary()
                 refreshRecentDocuments()
 
-                val newEngine = PdfEngine(getApplication(), uri)
+                val newEngine = PdfEngine.create(getApplication(), uri)
+                if (!newEngine.isOpen) {
+                    // Stale URI: permission was revoked or the file was moved/deleted.
+                    newEngine.close()
+                    repository.removeDocument(uri)
+                    refreshLibrary()
+                    refreshRecentDocuments()
+                    _toastMessage.value = "This file is no longer available. Please open it again."
+                    return@launch
+                }
+
                 _activeDocument.value = docItem
                 _engine.value = newEngine
                 _isReadMode.value = prefs.getBoolean("read_mode", false)
 
-                _bookmarks.value = newEngine.getBookmarks()
-                _outline.value = newEngine.getOutline()
+                // Bookmarks are persisted across sessions; the outline is loaded lazily.
+                _bookmarks.value = loadBookmarks(uri)
+                syncBookmarksToEngine()
+                _outline.value = emptyList()
+                outlineJob = viewModelScope.launch {
+                    val items = textExtractor.extractOutline(newEngine)
+                    if (_engine.value === newEngine) _outline.value = items
+                }
 
                 _extractedText.value = emptyMap()
                 _searchResults.value = emptyList()
@@ -185,9 +216,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 _selectedText.value = ""
                 _pageCharPositions.value = emptyMap()
                 _semanticSearchResults.value = emptyList()
+                _semanticSearchError.value = null
                 _showSemanticSearch.value = false
 
-                startTextExtraction(uri, newEngine.pageCount)
+                startTextExtraction(newEngine)
             } catch (e: Exception) {
                 e.printStackTrace()
                 _toastMessage.value = "Error opening document: ${e.message}"
@@ -195,17 +227,34 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun startTextExtraction(uri: Uri, pageCount: Int) {
-        viewModelScope.launch {
+    private fun cancelDocumentWork() {
+        textExtractionJob?.cancel()
+        semanticSearchJob?.cancel()
+        outlineJob?.cancel()
+        textExtractionJob = null
+        semanticSearchJob = null
+        outlineJob = null
+    }
+
+    private fun startTextExtraction(engine: PdfEngine) {
+        textExtractionJob = viewModelScope.launch {
             _isExtractingText.value = true
-            textExtractor.extractTextStreaming(uri, pageCount) { page, text ->
+            var lastSearchResults = 0
+            textExtractor.extractTextStreaming(engine) { page, text ->
                 val currentMap = _extractedText.value.toMutableMap()
                 currentMap[page] = text
                 _extractedText.value = currentMap
-                
-                if (_searchQuery.value.isNotBlank()) {
-                    val results = textExtractor.search(currentMap, _searchQuery.value)
-                    _searchResults.value = results
+
+                // Re-run the local search only when the number of matches can actually
+                // have changed. Previously this re-scanned every page on every page
+                // callback, which was O(n^2) for large documents.
+                val query = _searchQuery.value
+                if (query.isNotBlank() && text.contains(query, ignoreCase = true)) {
+                    val results = textExtractor.search(currentMap, query)
+                    if (results.size != lastSearchResults) {
+                        lastSearchResults = results.size
+                        _searchResults.value = results
+                    }
                 }
             }
             _isExtractingText.value = false
@@ -214,6 +263,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     
 
     fun closeDocument() {
+        cancelDocumentWork()
         _engine.value?.close()
         _engine.value = null
         _activeDocument.value = null
@@ -229,6 +279,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         _outline.value = emptyList()
         _showOverview.value = false
         _semanticSearchResults.value = emptyList()
+        _semanticSearchError.value = null
+        _isSemanticSearching.value = false
+        _isExtractingText.value = false
         _showSemanticSearch.value = false
     }
 
@@ -243,17 +296,61 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         prefs.edit().putBoolean("read_mode", _isReadMode.value).apply()
     }
 
-    // --- Bookmarks ---
+    // --- Bookmarks (persisted per document) ---
+    fun isPageBookmarked(pageIndex: Int): Boolean = _bookmarks.value.any { it.pageIndex == pageIndex }
+
     fun toggleBookmark(pageIndex: Int) {
-        val engine = _engine.value ?: return
-        if (engine.isBookmarked(pageIndex)) {
-            engine.removeBookmark(pageIndex)
+        val current = _bookmarks.value.toMutableList()
+        val existing = current.firstOrNull { it.pageIndex == pageIndex }
+        if (existing != null) {
+            current.remove(existing)
             _toastMessage.value = "Bookmark removed"
         } else {
-            engine.addBookmark(pageIndex, "Page ${pageIndex + 1}")
+            current.add(Bookmark(pageIndex, "Page ${pageIndex + 1}"))
+            current.sortBy { it.pageIndex }
             _toastMessage.value = "Bookmark added"
         }
-        _bookmarks.value = engine.getBookmarks()
+        _bookmarks.value = current
+        saveBookmarks(current)
+        syncBookmarksToEngine()
+    }
+
+    private fun bookmarksKey(uri: Uri): String = "bookmarks_${uri.toString().hashCode()}"
+
+    private fun saveBookmarks(items: List<Bookmark>) {
+        val uri = _activeDocument.value?.uri ?: return
+        val array = JSONArray()
+        items.forEach { b ->
+            val obj = org.json.JSONObject()
+            obj.put("page", b.pageIndex)
+            obj.put("title", b.title)
+            obj.put("createdAt", b.createdAt)
+            array.put(obj)
+        }
+        prefs.edit().putString(bookmarksKey(uri), array.toString()).apply()
+    }
+
+    private fun loadBookmarks(uri: Uri): List<Bookmark> {
+        val raw = prefs.getString(bookmarksKey(uri), null) ?: return emptyList()
+        return try {
+            val array = JSONArray(raw)
+            (0 until array.length()).map { i ->
+                val obj = array.getJSONObject(i)
+                Bookmark(
+                    pageIndex = obj.getInt("page"),
+                    title = obj.optString("title", "Page ${obj.getInt("page") + 1}"),
+                    createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                )
+            }.sortedBy { it.pageIndex }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun syncBookmarksToEngine() {
+        val engine = _engine.value ?: return
+        engine.clearBookmarks()
+        _bookmarks.value.forEach { engine.addBookmark(it.pageIndex, it.title) }
     }
 
     fun goToBookmark(bookmark: Bookmark) {
@@ -321,7 +418,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         if (query.isBlank()) return
         
         viewModelScope.launch {
-            val rects = textExtractor.getPageMatchRects(engine.uri, pageIndex, query)
+            val rects = textExtractor.getPageMatchRects(engine, pageIndex, query)
             val currentHighlights = _searchHighlights.value.toMutableMap()
             currentHighlights[pageIndex] = rects
             _searchHighlights.value = currentHighlights
@@ -381,19 +478,27 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
-        viewModelScope.launch {
+        semanticSearchJob?.cancel()
+        val searchEngine = _engine.value
+        semanticSearchJob = viewModelScope.launch {
             _isSemanticSearching.value = true
             _semanticSearchError.value = null
-            
+
             val model = settingsRepository.selectedModel
-            
+
             val result = groqSearchService.semanticSearch(
                 apiKey = apiKey,
                 query = query,
                 pageTexts = pageTexts,
                 model = model
             )
-            
+
+            // Ignore results if the user navigated away while the request was in flight.
+            if (_engine.value !== searchEngine) {
+                _isSemanticSearching.value = false
+                return@launch
+            }
+
             result.onSuccess { results ->
                 _semanticSearchResults.value = results
                 if (results.isNotEmpty()) {
@@ -401,14 +506,14 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     val rawPage = results[0].pageNumber
                     val engine = _engine.value
                     val maxPage = engine?.pageCount ?: 1
-                    
+
                     // Only navigate if page is valid and AI actually found something
                     val content = results[0].content.lowercase()
-                    val foundAnswer = !content.contains("could not find") && 
-                                      !content.contains("not found") && 
+                    val foundAnswer = !content.contains("could not find") &&
+                                      !content.contains("not found") &&
                                       !content.contains("don't have") &&
                                       !content.contains("no information")
-                    
+
                     if (foundAnswer && rawPage in 1..maxPage) {
                         val pageIndex = (rawPage - 1).coerceIn(0, maxPage - 1)
                         requestNavigateToPage(pageIndex)
@@ -417,7 +522,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             }.onFailure { error ->
                 _semanticSearchError.value = error.message ?: "Search failed"
             }
-            
+
             _isSemanticSearching.value = false
         }
     }
@@ -428,7 +533,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         val engine = _engine.value ?: return
         
         viewModelScope.launch {
-            val chars = textExtractor.getPageCharPositions(engine.uri, pageIndex)
+            val chars = textExtractor.getPageCharPositions(engine, pageIndex)
             val current = _pageCharPositions.value.toMutableMap()
             current[pageIndex] = chars
             _pageCharPositions.value = current
@@ -475,6 +580,38 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             clipboard.setPrimaryClip(ClipData.newPlainText("PDF Selection", text))
             _toastMessage.value = "Copied to clipboard"
             clearSelection()
+        }
+    }
+
+    /** Creates a real PDF highlight annotation over the currently selected characters. */
+    fun highlightSelection() {
+        val selection = _textSelection.value ?: return
+        val engine = _engine.value ?: return
+        val chars = _pageCharPositions.value[selection.pageIndex] ?: return
+        val start = minOf(selection.startCharIndex, selection.endCharIndex)
+        val end = maxOf(selection.startCharIndex, selection.endCharIndex)
+        val rects = (start..end).mapNotNull { chars.getOrNull(it)?.rect }
+        if (rects.isEmpty()) {
+            _toastMessage.value = "Could not highlight this selection"
+            return
+        }
+        if (engine.addTextAnnotation(selection.pageIndex, rects)) {
+            engine.invalidatePage(selection.pageIndex)
+            _annotationRevision.value++
+            _toastMessage.value = "Highlight added — save to keep it"
+            clearSelection()
+        } else {
+            _toastMessage.value = "Could not highlight this selection"
+        }
+    }
+
+    /** Writes annotation edits back to the app-private working copy of the PDF. */
+    fun saveAnnotations() {
+        val engine = _engine.value ?: return
+        _toastMessage.value = if (engine.saveChanges()) {
+            "Annotations saved"
+        } else {
+            "No annotation changes to save"
         }
     }
 
@@ -539,6 +676,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         super.onCleared()
+        cancelDocumentWork()
         _engine.value?.close()
     }
 }
