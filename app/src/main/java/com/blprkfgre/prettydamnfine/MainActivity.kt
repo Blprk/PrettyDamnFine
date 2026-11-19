@@ -56,7 +56,8 @@ fun MainApp(viewModel: PdfViewerViewModel, settingsRepository: SettingsRepositor
     if (showSettings) {
         SettingsScreen(
             repository = settingsRepository,
-            onBack = { showSettings = false }
+            onBack = { showSettings = false },
+            onRefreshModels = { viewModel.refreshModels() }
         )
     } else if (engine == null) {
         LibraryScreen(

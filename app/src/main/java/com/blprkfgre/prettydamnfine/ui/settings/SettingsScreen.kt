@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 fun SettingsScreen(
     repository: SettingsRepository,
     onBack: () -> Unit,
+    onRefreshModels: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var apiKey by remember { mutableStateOf(repository.apiKey) }
@@ -173,7 +174,7 @@ fun SettingsScreen(
                             expanded = modelDropdownExpanded,
                             onDismissRequest = { modelDropdownExpanded = false }
                         ) {
-                            SettingsRepository.AVAILABLE_MODELS.forEach { model ->
+                            repository.modelOptions().forEach { model ->
                                 DropdownMenuItem(
                                     text = {
                                         Column {
@@ -193,6 +194,10 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                    }
+
+                    TextButton(onClick = onRefreshModels, modifier = Modifier.fillMaxWidth()) {
+                        Text("Refresh available models from Groq")
                     }
                 }
             }

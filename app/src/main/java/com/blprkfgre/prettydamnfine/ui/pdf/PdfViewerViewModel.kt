@@ -376,16 +376,37 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // --- Share ---
+    /** Shares the app-private working copy via FileProvider so any app can read it. */
     fun shareDocument() {
         val engine = _engine.value ?: return
         val context = getApplication<Application>()
-        
+        val file = java.io.File(engine.workingCopyPath())
+        if (!file.exists()) return
+
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        launchShareChooser(context, uri)
+    }
+
+    /** Shares a document directly from the library (before it is opened). */
+    fun shareDocument(uri: Uri) {
+        val context = getApplication<Application>()
+        if (!repository.isUriAccessible(uri)) {
+            _toastMessage.value = "This file is no longer available"
+            return
+        }
+        launchShareChooser(context, uri)
+    }
+
+    private fun launchShareChooser(context: Context, uri: Uri) {
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "application/pdf"
-            putExtra(Intent.EXTRA_STREAM, engine.uri)
+            putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        
         val chooser = Intent.createChooser(shareIntent, "Share PDF")
         chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(chooser)
@@ -653,6 +674,37 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     
     fun setModel(model: String) {
         settingsRepository.selectedModel = model
+    }
+
+    /** Pulls the currently available Groq models so retired IDs are never offered. */
+    fun refreshModels() {
+        val key = settingsRepository.apiKey
+        if (key.isBlank()) {
+            _toastMessage.value = "Set your Groq API key first"
+            return
+        }
+        viewModelScope.launch {
+            groqSearchService.fetchAvailableModels(key)
+                .onSuccess { ids ->
+                    if (ids.isEmpty()) {
+                        _toastMessage.value = "Groq returned no models"
+                        return@onSuccess
+                    }
+                    settingsRepository.availableModelIds = ids
+                    val current = settingsRepository.selectedModel
+                    if (current != "random" && current !in ids) {
+                        settingsRepository.selectedModel = if (SettingsRepository.DEFAULT_MODEL in ids) {
+                            SettingsRepository.DEFAULT_MODEL
+                        } else {
+                            ids.first()
+                        }
+                    }
+                    _toastMessage.value = "Models refreshed (${ids.size})"
+                }
+                .onFailure { error ->
+                    _toastMessage.value = error.message ?: "Could not refresh models"
+                }
+        }
     }
 
     // --- Session persistence ---

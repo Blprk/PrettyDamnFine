@@ -177,6 +177,7 @@ fun LibraryScreen(
                         document = doc,
                         onClick = { onOpenPdf(doc.uri) },
                         onRemove = { documentToRemove = doc },
+                        onShare = { viewModel.shareDocument(doc.uri) },
                         modifier = Modifier.padding(horizontal = 16.dp)
                     )
                 }
@@ -269,6 +270,7 @@ private fun DocumentCard(
     document: PdfDocumentItem,
     onClick: () -> Unit,
     onRemove: () -> Unit,
+    onShare: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -334,6 +336,10 @@ private fun DocumentCard(
                     )
                 }
                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Share") },
+                        onClick = { showMenu = false; onShare() }
+                    )
                     DropdownMenuItem(
                         text = { Text("Remove from Library") },
                         onClick = { showMenu = false; onRemove() }

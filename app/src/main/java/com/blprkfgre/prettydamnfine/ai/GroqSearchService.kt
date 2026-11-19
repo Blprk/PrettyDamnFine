@@ -25,6 +25,43 @@ class GroqSearchService(private val context: Context) {
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
+    /** Fetches the model IDs currently available to this API key from Groq. */
+    suspend fun fetchAvailableModels(apiKey: String): Result<List<String>> = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("API key is required"))
+        }
+        try {
+            val request = Request.Builder()
+                .url("https://api.groq.com/openai/v1/models")
+                .addHeader("Authorization", "Bearer $apiKey")
+                .get()
+                .build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.use { it.string() } ?: ""
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(
+                    IOException("Could not fetch models (${response.code}). Check your API key.")
+                )
+            }
+            val data = JSONObject(body).optJSONArray("data")
+            val ids = mutableListOf<String>()
+            if (data != null) {
+                for (i in 0 until data.length()) {
+                    val id = data.getJSONObject(i).optString("id")
+                    // Only chat-capable models; drop transcription/guard/embedding models.
+                    if (id.isNotBlank() && !id.contains("whisper") &&
+                        !id.contains("guard") && !id.contains("embedding")
+                    ) {
+                        ids.add(id)
+                    }
+                }
+            }
+            Result.success(ids.sorted())
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     /**
      * Scores every page by how often the query's meaningful terms occur, then
      * returns the most relevant pages first. When nothing matches, falls back to
@@ -85,7 +122,7 @@ class GroqSearchService(private val context: Context) {
         apiKey: String,
         query: String,
         pageTexts: Map<Int, String>,
-        model: String = "llama-3.1-8b-instant"
+        model: String = "openai/gpt-oss-20b"
     ): Result<List<SemanticSearchResult>> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("API key is required"))
@@ -128,18 +165,7 @@ Rules:
             """.trimIndent()
 
             val effectiveModel = if (model == "random") {
-                listOf(
-                    "llama-3.1-8b-instant",
-                    "llama-3.3-70b-versatile",
-                    "meta-llama/llama-4-scout-17b-16e-instruct",
-                    "qwen/qwen3-32b",
-                    "openai/gpt-oss-120b",
-                    "openai/gpt-oss-20b",
-                    "moonshotai/kimi-k2-instruct",
-                    "groq/compound",
-                    "groq/compound-mini",
-                    "allam-2-7b"
-                ).random()
+                listOf("openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b").random()
             } else {
                 model
             }
@@ -153,7 +179,12 @@ Rules:
                     })
                 })
                 put("temperature", 0.1)
-                put("max_tokens", 1024)
+                // Groq's gpt-oss reasoning models require max_completion_tokens.
+                if (effectiveModel.startsWith("openai/gpt-oss")) {
+                    put("max_completion_tokens", 1024)
+                } else {
+                    put("max_tokens", 1024)
+                }
             }
 
             val body = json.toString().toRequestBody("application/json".toMediaType())
@@ -174,7 +205,7 @@ Rules:
                     429 -> "Rate limited. Wait and try again."
                     401 -> "Invalid API key. Check Settings."
                     402 -> "Need free credits. Get API key from groq.com"
-                    404 -> "Model not found. Try a different model."
+                    404 -> "This model is no longer available on Groq. Refresh models in Settings or pick another."
                     400 -> "Bad request. Try a different model."
                     else -> "Error ${response.code}"
                 }

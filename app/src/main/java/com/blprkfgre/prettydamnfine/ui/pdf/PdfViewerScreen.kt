@@ -169,6 +169,8 @@ fun PdfViewerScreen(
             onDismiss = { viewModel.dismissSemanticSearch() },
             onClearError = { viewModel.clearSemanticSearchError() },
             onModelChange = { model -> viewModel.setModel(model) },
+            onRefreshModels = { viewModel.refreshModels() },
+            availableModels = settingsRepository.modelOptions(),
             currentModel = settingsRepository.selectedModel
         )
     }
@@ -181,7 +183,9 @@ fun PdfViewerScreen(
     }
 
     val currentEngine = engine!!
-    val currentPage = listState.firstVisibleItemIndex
+    // derivedStateOf keeps the page indicator (and everything that reads currentPage)
+    // from recomposing on every scroll frame — only when the first visible page changes.
+    val currentPage by remember { derivedStateOf { listState.firstVisibleItemIndex } }
 
     if (showPageJump) {
         PageJumpDialog(
@@ -503,6 +507,12 @@ fun PdfViewerScreen(
                     IconButton(onClick = { viewModel.saveAnnotations() }) {
                         Icon(Icons.Default.Check, "Save annotations", tint = MaterialTheme.colorScheme.onSurface)
                     }
+
+                    VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
+
+                    TextButton(onClick = { viewModel.shareDocument() }) {
+                        Text("Share", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
         }
@@ -518,15 +528,17 @@ private fun SemanticSearchDialog(
     onDismiss: () -> Unit,
     onClearError: () -> Unit,
     onModelChange: (String) -> Unit,
+    onRefreshModels: () -> Unit,
+    availableModels: List<com.blprkfgre.prettydamnfine.ui.settings.ModelOption>,
     currentModel: String
 ) {
     var query by remember { mutableStateOf("") }
     var showModelSelector by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val focusRequester = remember { FocusRequester() }
-    
-    val availableModels = SettingsRepository.AVAILABLE_MODELS
-    val currentModelName = availableModels.find { it.id == currentModel }?.name ?: "Llama 3.1 8B"
+
+    val currentModelName = availableModels.find { it.id == currentModel }?.name
+        ?: currentModel.substringAfterLast("/")
     
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
@@ -717,6 +729,11 @@ private fun SemanticSearchDialog(
             confirmButton = {
                 TextButton(onClick = { showModelSelector = false }) {
                     Text("Cancel")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { onRefreshModels() }) {
+                    Text("Refresh")
                 }
             }
         )

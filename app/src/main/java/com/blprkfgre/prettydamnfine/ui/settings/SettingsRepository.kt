@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.json.JSONArray
 import java.security.KeyStore
 
 class SettingsRepository(private val context: Context) {
@@ -80,28 +81,60 @@ class SettingsRepository(private val context: Context) {
         set(value) = prefs.edit().putBoolean("semantic_search_enabled", value).apply()
 
     var selectedModel: String
-        get() = prefs.getString("selected_model", "llama-3.1-8b-instant") ?: "llama-3.1-8b-instant"
+        get() = prefs.getString("selected_model", DEFAULT_MODEL) ?: DEFAULT_MODEL
         set(value) = prefs.edit().putString("selected_model", value).apply()
+
+    /** Live model IDs fetched from Groq; falls back to a current built-in list. */
+    var availableModelIds: List<String>
+        get() {
+            val raw = prefs.getString("available_models", null) ?: return DEFAULT_MODEL_IDS
+            return try {
+                val arr = JSONArray(raw)
+                (0 until arr.length()).map { arr.getString(it) }
+                    .filter { it.isNotBlank() }
+                    .ifEmpty { DEFAULT_MODEL_IDS }
+            } catch (e: Exception) {
+                DEFAULT_MODEL_IDS
+            }
+        }
+        set(value) {
+            prefs.edit().putString("available_models", JSONArray(value).toString()).apply()
+        }
+
+    /** Model options for the UI, including any newly published Groq models. */
+    fun modelOptions(): List<ModelOption> {
+        val known = KNOWN_MODELS.associateBy { it.id }
+        val options = availableModelIds.map { id ->
+            known[id] ?: ModelOption(id, id.substringAfterLast("/"), "Available on Groq")
+        }
+        return (options + ModelOption("random", "⚡ Random Model", "Try a random model"))
+            .distinctBy { it.id }
+    }
 
     companion object {
         private const val SECURE_PREFS = "pdf_secure_settings"
         private const val API_KEY = "groq_api_key"
 
+        const val DEFAULT_MODEL = "openai/gpt-oss-20b"
+
         private val sessionOnlyValues = mutableMapOf<String, String?>()
 
+        // Active chat models as of Nov 2026. Retired Llama 3.1/3.3, Qwen 3 32B,
+        // Llama 4 Scout and both Compound models are intentionally excluded.
+        val DEFAULT_MODEL_IDS = listOf(
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b",
+            "qwen/qwen3.8-27b"
+        )
+
         val AVAILABLE_MODELS = listOf(
-            ModelOption("llama-3.1-8b-instant", "Llama 3.1 8B", "Fastest · Recommended"),
-            ModelOption("llama-3.3-70b-versatile", "Llama 3.3 70B", "Most capable"),
-            ModelOption("meta-llama/llama-4-scout-17b-16e-instruct", "Llama 4 Scout 17B", "Efficient"),
-            ModelOption("qwen/qwen3-32b", "Qwen 3 32B", "Powerful"),
-            ModelOption("openai/gpt-oss-120b", "GPT OSS 120B", "Large model"),
-            ModelOption("openai/gpt-oss-20b", "GPT OSS 20B", "Balanced"),
-            ModelOption("moonshotai/kimi-k2-instruct", "Kimi K2", "General purpose"),
-            ModelOption("groq/compound", "Groq Compound", "General purpose"),
-            ModelOption("groq/compound-mini", "Groq Compound Mini", "Fast"),
-            ModelOption("allam-2-7b", "Allam 2 7B", "General purpose"),
+            ModelOption("openai/gpt-oss-20b", "GPT OSS 20B", "Fastest · Recommended"),
+            ModelOption("openai/gpt-oss-120b", "GPT OSS 120B", "Most capable"),
+            ModelOption("qwen/qwen3.8-27b", "Qwen 3.8 27B", "Balanced"),
             ModelOption("random", "⚡ Random Model", "Try a random model")
         )
+
+        private val KNOWN_MODELS = AVAILABLE_MODELS.filter { it.id != "random" }
     }
 }
 

@@ -5,6 +5,22 @@ All notable changes to PrettyDamnFine are documented here. This project follows
 
 ---
 
+## [2.0.1] — 2026-11-20
+
+### Fixed
+- **Groq "model not found"**: retired model IDs (`llama-3.1-8b-instant`, `llama-3.3-70b-versatile`, `qwen/qwen3-32b`, `llama-4-scout`, `groq/compound*`) were still hard-coded. Default is now `openai/gpt-oss-20b`, the random pool contains only active models, and gpt-oss requests use `max_completion_tokens`.
+- Added **Refresh models** in Settings and in the AI model picker: fetches the live model list from `GET /openai/v1/models` with your key, so future Groq changes no longer break the app.
+- 404 now explains that the model was retired and tells you to refresh.
+
+### Added
+- **Share** button in the PDF viewer and in each library document's menu. Uses a FileProvider content URI so WhatsApp, Email, Drive and any other PDF handler can open the file.
+- FileProvider configuration (`@xml/file_paths`) for the app-private PDF working copy.
+
+### Changed
+- Page indicator now uses `derivedStateOf`, eliminating whole-screen recomposition on every scroll frame.
+
+---
+
 ## [2.0.0] — 2026-11-20
 
 **The MuPDF release.** A major rewrite of the document engine and interaction layer.
