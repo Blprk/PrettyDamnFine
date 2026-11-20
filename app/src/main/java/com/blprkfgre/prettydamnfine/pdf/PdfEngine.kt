@@ -380,14 +380,18 @@ class PdfEngine private constructor(
         page: Page,
         tileWidth: Int,
         tileHeight: Int,
-        tileOffsetX: Int,
-        tileOffsetY: Int,
+        originX: Int,
+        originY: Int,
         zoom: Float
     ): Bitmap? {
         val bitmap = Bitmap.createBitmap(tileWidth, tileHeight, Bitmap.Config.ARGB_8888)
+        // AndroidDrawDevice treats these values as the pixmap's bounding box in
+        // *device* space: (originX+patchX0 .. originX+patchX1). Origins must be
+        // positive page coordinates; negative values sample outside the page and
+        // render blank tiles.
         val device = AndroidDrawDevice(
             bitmap,
-            -tileOffsetX, -tileOffsetY,
+            originX, originY,
             0, 0, tileWidth, tileHeight,
             false
         )
@@ -469,6 +473,10 @@ class PdfEngine private constructor(
                     val bounds = page.bounds
                     val pageW = maxOf(1f, bounds.x1 - bounds.x0)
                     val zoom = targetWidth / pageW
+                    // Match AndroidDrawDevice.drawPage(): the rendered box starts at
+                    // the transformed page origin, which is non-zero for some PDFs.
+                    val baseX = (bounds.x0 * zoom).toInt()
+                    val baseY = (bounds.y0 * zoom).toInt()
                     val result = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
                     val canvas = Canvas(result)
                     var top = 0
@@ -477,7 +485,7 @@ class PdfEngine private constructor(
                         var left = 0
                         while (left < targetWidth) {
                             val tw = minOf(TILE_SIZE, targetWidth - left)
-                            val tile = drawTileLocked(page, tw, th, left, top, zoom)
+                            val tile = drawTileLocked(page, tw, th, baseX + left, baseY + top, zoom)
                             if (tile != null) {
                                 canvas.drawBitmap(tile, left.toFloat(), top.toFloat(), null)
                                 tile.recycle()

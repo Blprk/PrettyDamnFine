@@ -135,6 +135,35 @@ fun PdfViewerScreen(
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+    var viewportWidth by remember { mutableFloatStateOf(0f) }
+    var viewportHeight by remember { mutableFloatStateOf(0f) }
+
+    /**
+     * Changes zoom while keeping the document point under the viewport centre
+     * anchored. Without this, scaling around the centre pushes the text you were
+     * reading off-screen and leaves a blank page visible.
+     */
+    fun zoomTo(target: Float) {
+        val newScale = target.coerceIn(1f, 5f)
+        val factor = newScale / scale
+        scale = newScale
+        // Anchor the TOP-LEFT of the viewport (not its centre). This is a
+        // vertical reader: the line you were reading should stay on screen
+        // instead of being pushed off into blank space.
+        val centreX = viewportWidth / 2f
+        val centreY = viewportHeight / 2f
+        offsetX = if (isReadMode) 0f else (centreX + offsetX) * factor - centreX
+        offsetY = (centreY + offsetY) * factor - centreY
+        if (newScale <= 1f) {
+            offsetX = 0f
+            offsetY = 0f
+            return
+        }
+        val maxX = (viewportWidth * newScale - viewportWidth) / 2f
+        val maxY = (viewportHeight * newScale - viewportHeight) / 2f
+        offsetX = if (isReadMode) 0f else offsetX.coerceIn(-maxX, maxX)
+        offsetY = offsetY.coerceIn(-maxY, maxY)
+    }
 
     // Read Mode locks horizontal movement: re-center whenever it is enabled.
     LaunchedEffect(isReadMode) {
@@ -292,6 +321,11 @@ fun PdfViewerScreen(
                 val maxWidth = constraints.maxWidth.toFloat()
                 val maxHeight = constraints.maxHeight.toFloat()
 
+                LaunchedEffect(maxWidth, maxHeight) {
+                    viewportWidth = maxWidth
+                    viewportHeight = maxHeight
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -424,14 +458,8 @@ fun PdfViewerScreen(
             ViewerBottomBar(
                 scale = scale,
                 onOutline = { viewModel.toggleOutline() },
-                onZoomOut = {
-                    scale = (scale - 0.5f).coerceIn(1f, 5f)
-                    if (scale <= 1f) {
-                        offsetX = 0f
-                        offsetY = 0f
-                    }
-                },
-                onZoomIn = { scale = (scale + 0.5f).coerceIn(1f, 5f) },
+                onZoomOut = { zoomTo(scale - 0.5f) },
+                onZoomIn = { zoomTo(scale + 0.5f) },
                 onSaveAnnotations = { viewModel.saveAnnotations() },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)

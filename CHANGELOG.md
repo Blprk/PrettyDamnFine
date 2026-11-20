@@ -5,6 +5,14 @@ All notable changes to PrettyDamnFine are documented here. This project follows
 
 ---
 
+## [2.0.5] — 2026-11-21
+
+### Fixed
+- **Zooming no longer shows a blank page.** The tiled renderer was passing negative origins to `AndroidDrawDevice`, so every tile except the first sampled outside the page. All tiles now use positive device-space origins (and account for non-zero page bounds).
+- **Zoom controls keep the page content on screen.** Zoom is now anchored to the viewport's top-left instead of its centre, so the text you were reading stays visible when zooming in or out.
+
+---
+
 ## [2.0.4] — 2026-11-21
 
 ### Added
