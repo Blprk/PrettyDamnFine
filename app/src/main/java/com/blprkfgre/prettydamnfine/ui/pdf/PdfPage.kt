@@ -13,7 +13,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -25,6 +24,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import com.blprkfgre.prettydamnfine.pdf.CharPos
 import com.blprkfgre.prettydamnfine.pdf.PdfEngine
 import com.blprkfgre.prettydamnfine.pdf.ReadingTheme
+import com.blprkfgre.prettydamnfine.ui.theme.PdfHighlight
+import com.blprkfgre.prettydamnfine.ui.theme.PdfSelectionDark
+import com.blprkfgre.prettydamnfine.ui.theme.PdfSelectionLight
+import com.blprkfgre.prettydamnfine.ui.theme.pageBackground
 import kotlinx.coroutines.delay
 
 @Composable
@@ -75,11 +78,7 @@ fun PdfPage(
         modifier = pageModifier
             .width(with(density) { baseWidthPx.toDp() })
             .aspectRatio(aspectRatio)
-            .background(when(theme) {
-                ReadingTheme.DARK -> Color(0xFF1A1A1A)
-                ReadingTheme.SEPIA -> Color(0xFFF4ECD8)
-                else -> Color.White
-            })
+            .background(theme.pageBackground)
             .pointerInput(pageIndex, charPositions) {
                 detectTapGestures(
                     onTap = { 
@@ -147,7 +146,7 @@ fun PdfPage(
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     highlights.forEach { rect ->
                         drawRect(
-                            color = Color.Yellow.copy(alpha = 0.4f),
+                            color = PdfHighlight.copy(alpha = 0.4f),
                             topLeft = Offset(rect.left * size.width, rect.top * size.height),
                             size = Size((rect.right - rect.left) * size.width, (rect.bottom - rect.top) * size.height)
                         )
@@ -168,7 +167,8 @@ fun PdfPage(
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     selectionRects.forEach { rect ->
                         drawRect(
-                            color = Color.Blue.copy(alpha = 0.3f),
+                            color = (if (theme == ReadingTheme.DARK) PdfSelectionDark else PdfSelectionLight)
+                                .copy(alpha = 0.35f),
                             topLeft = Offset(rect.left * size.width, rect.top * size.height),
                             size = Size((rect.right - rect.left) * size.width, (rect.bottom - rect.top) * size.height)
                         )

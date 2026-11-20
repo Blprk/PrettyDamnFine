@@ -10,6 +10,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import com.blprkfgre.prettydamnfine.state.IntentRoute
 import com.blprkfgre.prettydamnfine.ui.library.LibraryScreen
 import com.blprkfgre.prettydamnfine.ui.theme.AppThemeMode
 import com.blprkfgre.prettydamnfine.ui.pdf.PdfViewerScreen
@@ -23,9 +24,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        if (intent?.action == Intent.ACTION_VIEW) {
-            intent.data?.let { viewModel.openDocument(it) }
-        }
+        handleIncomingIntent(intent)
 
         setContent {
             val themeMode by viewModel.appThemeMode.collectAsState()
@@ -38,6 +37,22 @@ class MainActivity : ComponentActivity() {
             PrettyDamnFineTheme(darkTheme = dark) {
                 MainApp(viewModel, dark)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    /** Handles PDFs opened or shared from other apps (WhatsApp, Gmail, Files, etc.). */
+    private fun handleIncomingIntent(intent: Intent?) {
+        // Exhaustive routing: unknown actions and intents without a URI are no-ops.
+        when (val route = IntentRoute.from(intent)) {
+            is IntentRoute.ViewDocument -> viewModel.openDocument(route.uri)
+            is IntentRoute.SendDocument -> viewModel.openDocument(route.uri)
+            IntentRoute.None -> Unit
         }
     }
 }

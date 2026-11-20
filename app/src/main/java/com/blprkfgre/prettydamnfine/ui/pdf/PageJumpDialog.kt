@@ -10,7 +10,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.dp
+import com.blprkfgre.prettydamnfine.ui.components.Spacing
 
 @Composable
 fun PageJumpDialog(
@@ -36,7 +36,7 @@ fun PageJumpDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(Spacing.Md))
                 OutlinedTextField(
                     value = inputText,
                     onValueChange = { newValue ->

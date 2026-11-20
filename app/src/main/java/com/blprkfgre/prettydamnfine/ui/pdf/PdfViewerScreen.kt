@@ -1,44 +1,51 @@
 package com.blprkfgre.prettydamnfine.ui.pdf
 
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Patterns
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import com.blprkfgre.prettydamnfine.pdf.PdfEngine
 import com.blprkfgre.prettydamnfine.pdf.ReadingTheme
+import com.blprkfgre.prettydamnfine.ui.components.IconSizes
+import com.blprkfgre.prettydamnfine.ui.components.PdfSearchTopBar
+import com.blprkfgre.prettydamnfine.ui.components.PdfTopBar
+import com.blprkfgre.prettydamnfine.ui.components.SelectionToolbar
+import com.blprkfgre.prettydamnfine.ui.components.Spacing
+import com.blprkfgre.prettydamnfine.ui.components.ViewerBottomBar
+import com.blprkfgre.prettydamnfine.ui.components.ViewerChrome
+
+private fun suggestedPdfName(title: String?): String {
+    val base = (title ?: "document").trim()
+        .replace(Regex("[^\\w. -]"), "_")
+        .replace(Regex("(?i)\\.pdf$"), "")
+        .trim()
+    return (if (base.isBlank()) "document" else base) + ".pdf"
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,6 +71,7 @@ fun PdfViewerScreen(
     val currentTheme by viewModel.currentTheme.collectAsState()
     val showOutline by viewModel.showOutline.collectAsState()
     val annotationRevision by viewModel.annotationRevision.collectAsState()
+    val passwordRequired by viewModel.passwordRequired.collectAsState()
 
     // "Auto" is a user-facing choice; resolve it to an actual rendering theme.
     val effectiveTheme = if (currentTheme == ReadingTheme.AUTO) {
@@ -71,8 +79,14 @@ fun PdfViewerScreen(
     } else {
         currentTheme
     }
-    
+
     val context = LocalContext.current
+
+    // Save-a-copy: the system file picker lets the user choose Downloads or any
+    // storage provider. No storage permission is required (Storage Access Framework).
+    val saveLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/pdf")
+    ) { destination -> if (destination != null) viewModel.saveCurrentDocumentAs(destination) }
 
     var isSearchMode by remember { mutableStateOf(false) }
     var showPageJump by remember { mutableStateOf(false) }
@@ -109,6 +123,14 @@ fun PdfViewerScreen(
     // derivedStateOf keeps the page indicator (and everything that reads currentPage)
     // from recomposing on every scroll frame — only when the page actually changes.
     val currentPage by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+
+    // Prefetch selection data for the visible page so the FIRST long-press can select
+    // text instead of just warming up character positions.
+    LaunchedEffect(currentPage, engine?.uri) {
+        if (engine == null) return@LaunchedEffect
+        viewModel.fetchCharPositionsIfNeeded(currentPage)
+        viewModel.fetchCharPositionsIfNeeded(currentPage + 1)
+    }
 
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
@@ -206,68 +228,52 @@ fun PdfViewerScreen(
         modifier = modifier,
         topBar = {
             if (isSearchMode) {
-                TopAppBar(
-                    title = {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { viewModel.performSearch(it) },
-                            placeholder = { Text("Search…") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth().focusRequester(FocusRequester()),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            keyboardActions = KeyboardActions(onSearch = {}),
-                            textStyle = MaterialTheme.typography.bodyMedium,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Color.Transparent,
-                                unfocusedBorderColor = Color.Transparent
-                            )
-                        )
+                PdfSearchTopBar(
+                    query = searchQuery,
+                    onQueryChange = { viewModel.performSearch(it) },
+                    resultCount = searchResults.size,
+                    currentIndex = currentSearchIndex,
+                    onClose = {
+                        isSearchMode = false
+                        viewModel.performSearch("")
                     },
-                    navigationIcon = {
-                        IconButton(onClick = {
-                            isSearchMode = false
-                            viewModel.performSearch("")
-                        }) { Icon(Icons.Default.Close, null) }
-                    },
-                    actions = {
-                        if (searchResults.isNotEmpty()) {
-                            Text("${currentSearchIndex + 1}/${searchResults.size}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
-                        }
-                        IconButton(onClick = viewModel::previousSearchResult, enabled = searchResults.isNotEmpty()) { Icon(Icons.Default.KeyboardArrowUp, null) }
-                        IconButton(onClick = viewModel::nextSearchResult, enabled = searchResults.isNotEmpty()) { Icon(Icons.Default.KeyboardArrowDown, null) }
-                    }
+                    onPrevious = viewModel::previousSearchResult,
+                    onNext = viewModel::nextSearchResult
                 )
             } else {
-                TopAppBar(
-                    title = { 
-                        Column(modifier = Modifier.clickable { showPageJump = true }) {
-                            Text(activeDoc?.title ?: "Document", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                            Text("Page ${currentPage + 1} of ${currentEngine.pageCount}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) }
-                    },
-                    actions = {
-                        IconButton(onClick = { viewModel.shareDocument() }) {
-                            Icon(Icons.Filled.Share, "Share")
-                        }
-                        IconButton(onClick = { isSearchMode = true }) { Icon(Icons.Default.Search, "Search text") }
-                        IconButton(onClick = { showThemeSelector = true }) { Icon(Icons.Default.Settings, "Settings") }
-                    }
+                PdfTopBar(
+                    title = activeDoc?.title ?: "Document",
+                    currentPage = currentPage,
+                    pageCount = currentEngine.pageCount,
+                    onBack = onBack,
+                    onOpenPageJump = { showPageJump = true },
+                    onSaveCopy = { saveLauncher.launch(suggestedPdfName(activeDoc?.title)) },
+                    onShare = { viewModel.shareDocument() },
+                    onSearch = { isSearchMode = true },
+                    onThemeSettings = { showThemeSelector = true }
                 )
             }
         },
         floatingActionButton = {
+            // Hidden while text is selected so it can never collide with the
+            // selection toolbar, which occupies the same bottom band.
             if (!isSearchMode && textSelection == null) {
                 FloatingActionButton(
                     onClick = { viewModel.toggleReadMode() },
-                    modifier = Modifier.padding(bottom = 96.dp),
-                    containerColor = if (isReadMode) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                    modifier = Modifier.padding(bottom = ViewerChrome.FloatingBottomInset),
+                    containerColor = if (isReadMode)
+                        MaterialTheme.colorScheme.primaryContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = if (isReadMode)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.onSurface
                 ) {
                     Icon(
-                        if (isReadMode) Icons.Filled.Lock else Icons.Filled.Star,
-                        if (isReadMode) "Exit read mode" else "Read mode"
+                        imageVector = if (isReadMode) Icons.Filled.Lock else Icons.Filled.Star,
+                        contentDescription = if (isReadMode) "Exit read mode" else "Enter read mode",
+                        modifier = Modifier.size(IconSizes.Standard)
                     )
                 }
             }
@@ -344,7 +350,10 @@ fun PdfViewerScreen(
                                     }
                                 }
                             )
-                            HorizontalDivider(color = Color.DarkGray, thickness = 4.dp)
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                                thickness = 4.dp
+                            )
                         }
                     }
                 }
@@ -363,104 +372,85 @@ fun PdfViewerScreen(
 
             // Text selection toolbar — a proper contextual panel, not floating buttons.
             if (textSelection != null && selectedText.isNotBlank() && selectionToolbarVisible) {
-                Surface(
+                SelectionToolbar(
+                    canCall = Patterns.PHONE.matcher(selectedText).matches(),
+                    canEmail = Patterns.EMAIL_ADDRESS.matcher(selectedText).matches(),
+                    onCall = {
+                        val clean = selectedText.replace(Regex("[^0-9+]"), "")
+                        context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$clean")))
+                    },
+                    onEmail = {
+                        context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$selectedText")))
+                    },
+                    onCopy = { viewModel.copySelection() },
+                    onHighlight = { viewModel.highlightSelection() },
+                    onRemoveHighlight = { viewModel.removeHighlightFromSelection() },
+                    onClose = { viewModel.clearSelection() },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = 96.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    tonalElevation = 3.dp,
-                    shadowElevation = 6.dp
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        if (Patterns.PHONE.matcher(selectedText).matches()) {
-                            IconButton(onClick = {
-                                val clean = selectedText.replace(Regex("[^0-9+]"), "")
-                                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$clean")))
-                            }) { Icon(Icons.Filled.Phone, "Call") }
-                        }
-                        if (Patterns.EMAIL_ADDRESS.matcher(selectedText).matches()) {
-                            IconButton(onClick = {
-                                context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$selectedText")))
-                            }) { Icon(Icons.Filled.Email, "Email") }
-                        }
-                        IconButton(onClick = { viewModel.copySelection() }) {
-                            Icon(Icons.Filled.ContentCopy, "Copy selection")
-                        }
-                        IconButton(onClick = { viewModel.highlightSelection() }) {
-                            Icon(Icons.Filled.Edit, "Highlight selection")
-                        }
-                        IconButton(onClick = { viewModel.removeHighlightFromSelection() }) {
-                            Icon(Icons.Filled.Delete, "Remove highlight")
-                        }
-                        IconButton(onClick = { viewModel.clearSelection() }) {
-                            Icon(Icons.Filled.Close, "Clear selection")
-                        }
-                    }
-                }
+                        .padding(
+                            start = Spacing.Md,
+                            end = Spacing.Md,
+                            bottom = ViewerChrome.FloatingBottomInset
+                        )
+                )
             }
 
-            // Floating Pill Overlay
-            Surface(
+            // Bottom contextual bar — outline, zoom and save-annotations.
+            ViewerBottomBar(
+                scale = scale,
+                onOutline = { viewModel.toggleOutline() },
+                onZoomOut = {
+                    scale = (scale - 0.5f).coerceIn(1f, 5f)
+                    if (scale <= 1f) {
+                        offsetX = 0f
+                        offsetY = 0f
+                    }
+                },
+                onZoomIn = { scale = (scale + 0.5f).coerceIn(1f, 5f) },
+                onSaveAnnotations = { viewModel.saveAnnotations() },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 24.dp)
-                    .height(56.dp)
-                    .wrapContentWidth(),
-                shape = androidx.compose.foundation.shape.CircleShape,
-                color = MaterialTheme.colorScheme.surfaceColorAtElevation(6.dp),
-                tonalElevation = 6.dp,
-                shadowElevation = 8.dp
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    IconButton(onClick = { viewModel.toggleOutline() }) {
-                        Icon(Icons.AutoMirrored.Filled.List, "Outline", tint = MaterialTheme.colorScheme.onSurface)
-                    }
-
-                    VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
-
-                    IconButton(onClick = { 
-                        scale = (scale - 0.5f).coerceIn(1f, 5f)
-                        if (scale <= 1f) { offsetX = 0f; offsetY = 0f }
-                    }) {
-                        Icon(Icons.Filled.Remove, "Zoom out", tint = MaterialTheme.colorScheme.onSurface)
-                    }
-                    
-                    Text(
-                        text = "${(scale * 100).toInt()}%",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.width(48.dp),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-
-                    IconButton(onClick = { 
-                        scale = (scale + 0.5f).coerceIn(1f, 5f)
-                    }) {
-                        Icon(Icons.Filled.Add, "Zoom in", tint = MaterialTheme.colorScheme.onSurface)
-                    }
-
-                    VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
-
-                    IconButton(onClick = { viewModel.shareDocument() }) {
-                        Icon(Icons.Filled.Share, "Share", tint = MaterialTheme.colorScheme.onSurface)
-                    }
-
-                    VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
-
-                    IconButton(onClick = { viewModel.saveAnnotations() }) {
-                        Icon(Icons.Filled.Save, "Save annotations", tint = MaterialTheme.colorScheme.onSurface)
-                    }
-                }
-            }
+                    .padding(bottom = ViewerChrome.BarBottomInset)
+            )
         }
     }
+
+    if (passwordRequired) {
+        PasswordDialog(
+            onAuthenticate = { viewModel.authenticate(it) },
+            onDismiss = { viewModel.closeDocument() }
+        )
+    }
+}
+
+@Composable
+private fun PasswordDialog(onAuthenticate: (String) -> Boolean, onDismiss: () -> Unit) {
+    var password by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+        title = { Text("Password protected PDF") },
+        text = {
+            Column {
+                Text("Enter the password to open this document.")
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { onAuthenticate(password) }),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onAuthenticate(password) }) { Text("Unlock") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }

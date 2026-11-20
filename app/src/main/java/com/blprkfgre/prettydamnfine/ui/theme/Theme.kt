@@ -1,6 +1,5 @@
 package com.blprkfgre.prettydamnfine.ui.theme
 
-import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -9,7 +8,6 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 enum class AppThemeMode { SYSTEM, LIGHT, DARK }
@@ -26,7 +24,15 @@ private val DarkColorScheme = darkColorScheme(
     surface = SurfaceDark,
     onSurface = OnSurfaceDark,
     surfaceVariant = SurfaceVariantDark,
-    onSurfaceVariant = OnSurfaceVariantDark
+    onSurfaceVariant = OnSurfaceVariantDark,
+    surfaceTint = PrimaryDark,
+    inverseSurface = InverseSurfaceDark,
+    inverseOnSurface = InverseOnSurfaceDark,
+    outline = OutlineDark,
+    outlineVariant = OutlineVariantDark,
+    scrim = Scrim,
+    error = ErrorDark,
+    onError = OnErrorDark
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -41,7 +47,15 @@ private val LightColorScheme = lightColorScheme(
     surface = SurfaceLight,
     onSurface = OnSurfaceLight,
     surfaceVariant = SurfaceVariantLight,
-    onSurfaceVariant = OnSurfaceVariantLight
+    onSurfaceVariant = OnSurfaceVariantLight,
+    surfaceTint = PrimaryLight,
+    inverseSurface = InverseSurfaceLight,
+    inverseOnSurface = InverseOnSurfaceLight,
+    outline = OutlineLight,
+    outlineVariant = OutlineVariantLight,
+    scrim = Scrim,
+    error = ErrorLight,
+    onError = OnErrorLight
 )
 
 @Composable

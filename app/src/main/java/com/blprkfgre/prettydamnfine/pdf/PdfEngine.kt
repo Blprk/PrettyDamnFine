@@ -94,17 +94,26 @@ class PdfEngine private constructor(
     }
 
     companion object {
-        /** Copies the content-URI into app cache, then opens it with MuPDF. */
+        /**
+         * Opens a URI with MuPDF. Content URIs are copied into app-private storage so
+         * annotations can be saved; already-imported file:// URIs are opened directly
+         * instead of being copied a second time.
+         */
         suspend fun create(context: Context, uri: Uri): PdfEngine = withContext(Dispatchers.IO) {
-            // filesDir (not cacheDir) so annotation edits survive app restarts.
             val dir = File(context.filesDir, "pdf").apply { mkdirs() }
-            val file = File(dir, "${uri.toString().hashCode()}.pdf")
-            if (!file.exists() || file.length() == 0L) {
-                val input = context.contentResolver.openInputStream(uri)
-                    ?: throw IOException("Cannot open the selected file")
-                FileOutputStream(file).use { out ->
-                    input.use { it.copyTo(out, 64 * 1024) }
+            val internalDir = dir.absolutePath + File.separator
+            val file = if (uri.scheme == "file" && uri.path?.startsWith(internalDir) == true) {
+                File(uri.path!!)
+            } else {
+                val target = File(dir, "${uri.toString().hashCode()}.pdf")
+                if (!target.exists() || target.length() == 0L) {
+                    val input = context.contentResolver.openInputStream(uri)
+                        ?: throw IOException("Cannot open the selected file")
+                    FileOutputStream(target).use { out ->
+                        input.use { it.copyTo(out, 64 * 1024) }
+                    }
                 }
+                target
             }
             val engine = PdfEngine(context, uri, file)
             engine.open()

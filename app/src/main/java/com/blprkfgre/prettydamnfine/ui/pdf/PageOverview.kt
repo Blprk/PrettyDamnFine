@@ -1,27 +1,29 @@
 package com.blprkfgre.prettydamnfine.ui.pdf
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import com.blprkfgre.prettydamnfine.pdf.PdfEngine
 import com.blprkfgre.prettydamnfine.pdf.ReadingTheme
+import com.blprkfgre.prettydamnfine.ui.components.Radii
+import com.blprkfgre.prettydamnfine.ui.components.Spacing
+import com.blprkfgre.prettydamnfine.ui.theme.pageBackground
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.border
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,18 +45,18 @@ fun PageOverviewSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.85f)
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = Spacing.Md)
         ) {
             Text(
                 text = "Pages",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(bottom = 16.dp)
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.padding(bottom = Spacing.Md)
             )
 
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.Md),
+                verticalArrangement = Arrangement.spacedBy(Spacing.Md),
                 modifier = Modifier.fillMaxSize()
             ) {
                 items(engine.pageCount) { index ->
@@ -99,30 +101,30 @@ fun PageThumbnail(
     val borderColor = if (isCurrentPage)
         MaterialTheme.colorScheme.primary
     else
-        Color.Transparent
+        MaterialTheme.colorScheme.outlineVariant
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clickable(onClick = onClick)
+        modifier = Modifier.clickable(onClickLabel = "Go to page ${pageIndex + 1}", onClick = onClick)
     ) {
         Box(
             modifier = Modifier
                 .aspectRatio(ratio)
-                .clip(RoundedCornerShape(8.dp))
-                .border(2.dp, borderColor, RoundedCornerShape(8.dp))
-                .background(Color.White),
+                .clip(RoundedCornerShape(Radii.Sm))
+                .border(2.dp, borderColor, RoundedCornerShape(Radii.Sm))
+                .background(theme.pageBackground),
             contentAlignment = Alignment.Center
         ) {
             thumbnail?.let { bmp ->
                 Image(
                     bitmap = bmp,
-                    contentDescription = "Page ${pageIndex + 1}",
+                    contentDescription = "Page ${pageIndex + 1} thumbnail",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )
             } ?: CircularProgressIndicator(modifier = Modifier.size(24.dp))
         }
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(Spacing.Xs))
         Text(
             text = "${pageIndex + 1}",
             style = MaterialTheme.typography.labelSmall,

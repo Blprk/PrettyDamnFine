@@ -5,6 +5,29 @@ All notable changes to PrettyDamnFine are documented here. This project follows
 
 ---
 
+## [2.0.3] — 2026-11-20
+
+### Fixed
+- **Library titles no longer revert to hash strings.** Re-opening a document from the library was overwriting its real title with the hash filename of the private import copy. Existing corrupted entries are repaired on load (falling back to the original provider name or "Imported PDF").
+- **Save a copy / Download**: added a top-bar download action in the viewer and a Save-a-copy action in the library card menu. Uses the Storage Access Framework (no storage permission) and writes the current PDF — including saved annotations — byte-for-byte to Downloads or any provider.
+- **Recent documents from other apps**: PDFs opened or shared from WhatsApp, Gmail or Files are now imported into app-private storage and recorded with a stable `file://` URI. They appear in Recent immediately and survive restarts, even when the source app grants only a temporary read permission.
+- **Library delete semantics corrected**: removing from the library no longer deletes the user's file from disk. Only the library entry and the app's own private copy are removed.
+- Password-protected PDFs are no longer mistaken for stale files: the library entry is kept and a password dialog is shown.
+- Fixed a crash when text-position prefetch ran past the last page of a one-page PDF.
+- Sharing a library document now uses a FileProvider URI instead of an unusable `file://` URI, and flushes unsaved annotations first.
+- Removed private PDFs and library metadata from cloud backup and device transfer.
+
+### Changed
+- **UI/UX overhaul**: one Material 3 design system (tokens for spacing, radii, typography, colors), reusable components, consistent icon buttons with content descriptions, 48dp touch targets, a wrapping contextual selection panel, cleaner library sections and overflow menus, and a refined dark theme.
+- **Explicit state machines**: 23 implicit modes were inventoried; viewer lifecycle, search, selection, overlays, read mode, theme, text extraction, library selection/sort and intent routing are now sealed types in `com.blprkfgre.prettydamnfine.state`, with legacy flows preserved as compatibility views. Impossible states are eliminated by construction.
+- Added `ACTION_SEND` and MIME-less `.pdf` intent filters, `singleTop` + `onNewIntent` handling, and prefetched character positions so the first long-press selects text immediately.
+- Added `FEATURE_ROADMAP.md` documenting the essential reader/editor feature set and current status.
+
+### Corrected (2.0.2 note)
+- The v2.0.2 entry below said library deletion removed files from the device. That behavior has been reverted: library removal is now metadata-only.
+
+---
+
 ## [2.0.2] — 2026-11-20
 
 ### Removed
@@ -13,7 +36,7 @@ All notable changes to PrettyDamnFine are documented here. This project follows
 
 ### Added
 - **Home-screen theme toggle** (light/dark) plus persisted app theme mode.
-- **Library multi-select**: long-press a document to select, Select all, and Delete (removes the file from the device where permitted, and from the library).
+- **Library multi-select**: long-press a document to select, Select all, and Remove from library (the original file is never deleted from disk — corrected in Unreleased).
 - **Library search and sort** (recent, oldest, name).
 - **Remove highlight**: select highlighted text and choose Remove highlight.
 - Material Icons Extended for a consistent, vector icon set across the app.

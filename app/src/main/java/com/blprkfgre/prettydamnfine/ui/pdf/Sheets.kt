@@ -5,19 +5,35 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.blprkfgre.prettydamnfine.pdf.Bookmark
 import com.blprkfgre.prettydamnfine.pdf.OutlineItem
 import com.blprkfgre.prettydamnfine.pdf.ReadingTheme
+import com.blprkfgre.prettydamnfine.ui.components.IconSizes
+import com.blprkfgre.prettydamnfine.ui.components.PdfEmptyState
+import com.blprkfgre.prettydamnfine.ui.components.Radii
+import com.blprkfgre.prettydamnfine.ui.components.Spacing
+import com.blprkfgre.prettydamnfine.ui.components.TouchTargets
+
+@Composable
+private fun SheetTitle(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleLarge,
+        modifier = Modifier.padding(bottom = Spacing.Md)
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,17 +52,12 @@ fun ThemeSelectorSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 32.dp)
+                .padding(horizontal = Spacing.Lg)
+                .padding(bottom = Spacing.Xl)
         ) {
-            Text(
-                text = "Reading Theme",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(bottom = 24.dp)
-            )
+            SheetTitle("Reading Theme")
 
             ThemeOption(
-                icon = Icons.Default.Check,
                 title = "Light",
                 subtitle = "Classic white background",
                 isSelected = currentTheme == ReadingTheme.LIGHT,
@@ -54,7 +65,6 @@ fun ThemeSelectorSheet(
             )
 
             ThemeOption(
-                icon = Icons.Default.Check,
                 title = "Dark",
                 subtitle = "Easy on the eyes at night",
                 isSelected = currentTheme == ReadingTheme.DARK,
@@ -62,7 +72,6 @@ fun ThemeSelectorSheet(
             )
 
             ThemeOption(
-                icon = Icons.Default.Check,
                 title = "Sepia",
                 subtitle = "Warm, book-like reading",
                 isSelected = currentTheme == ReadingTheme.SEPIA,
@@ -70,7 +79,6 @@ fun ThemeSelectorSheet(
             )
 
             ThemeOption(
-                icon = Icons.Default.Check,
                 title = "Auto",
                 subtitle = "Follows system setting",
                 isSelected = currentTheme == ReadingTheme.AUTO,
@@ -82,7 +90,6 @@ fun ThemeSelectorSheet(
 
 @Composable
 private fun ThemeOption(
-    icon: ImageVector,
     title: String,
     subtitle: String,
     isSelected: Boolean,
@@ -96,20 +103,21 @@ private fun ThemeOption(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .padding(vertical = Spacing.Xs)
+            .clip(RoundedCornerShape(Radii.Md))
             .background(backgroundColor)
-            .clickable(onClick = onClick)
-            .padding(16.dp),
+            .selectable(selected = isSelected, role = Role.RadioButton, onClick = onClick)
+            .padding(Spacing.Md)
+            .heightIn(min = TouchTargets.Min),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            imageVector = icon,
+            imageVector = Icons.Filled.PictureAsPdf,
             contentDescription = null,
             tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(32.dp)
+            modifier = Modifier.size(IconSizes.Large)
         )
-        Spacer(modifier = Modifier.width(16.dp))
+        Spacer(modifier = Modifier.width(Spacing.Md))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
@@ -123,7 +131,7 @@ private fun ThemeOption(
         }
         if (isSelected) {
             Icon(
-                imageVector = Icons.Default.Check,
+                imageVector = Icons.Filled.Check,
                 contentDescription = "Selected",
                 tint = MaterialTheme.colorScheme.primary
             )
@@ -149,41 +157,22 @@ fun BookmarksSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 32.dp)
+                .padding(horizontal = Spacing.Lg)
+                .padding(bottom = Spacing.Xl)
         ) {
-            Text(
-                text = "Bookmarks",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
+            SheetTitle("Bookmarks")
 
             if (bookmarks.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(200.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.FavoriteBorder,
-                            contentDescription = null,
-                            modifier = Modifier.size(48.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "No bookmarks yet",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                PdfEmptyState(
+                    icon = Icons.Filled.FavoriteBorder,
+                    title = "No bookmarks yet",
+                    message = "Bookmark pages to find them again quickly.",
+                    modifier = Modifier.fillMaxWidth()
+                )
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(Spacing.Sm)
                 ) {
                     items(bookmarks) { bookmark ->
                         BookmarkItem(
@@ -207,19 +196,20 @@ private fun BookmarkItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radii.Md))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .clickable(onClick = onClick)
-            .padding(16.dp),
+            .padding(Spacing.Md)
+            .heightIn(min = TouchTargets.Min),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            imageVector = Icons.Default.Favorite,
+            imageVector = Icons.Filled.Favorite,
             contentDescription = null,
             tint = if (isCurrentPage) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(24.dp)
+            modifier = Modifier.size(IconSizes.Standard)
         )
-        Spacer(modifier = Modifier.width(16.dp))
+        Spacer(modifier = Modifier.width(Spacing.Md))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = bookmark.title,
@@ -251,41 +241,22 @@ fun OutlineSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 32.dp)
+                .padding(horizontal = Spacing.Lg)
+                .padding(bottom = Spacing.Xl)
         ) {
-            Text(
-                text = "Table of Contents",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
+            SheetTitle("Table of Contents")
 
             if (outline.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(200.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.List,
-                            contentDescription = null,
-                            modifier = Modifier.size(48.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "No table of contents",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                PdfEmptyState(
+                    icon = Icons.AutoMirrored.Filled.List,
+                    title = "No table of contents",
+                    message = "This document doesn't include an outline.",
+                    modifier = Modifier.fillMaxWidth()
+                )
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(Spacing.Xs)
                 ) {
                     items(flattenOutline(outline)) { item ->
                         OutlineItemView(
@@ -319,14 +290,15 @@ private fun OutlineItemView(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(Radii.Sm))
             .clickable(onClick = onClick)
             .padding(
                 start = (item.level * 16 + 8).dp,
-                top = 12.dp,
-                bottom = 12.dp,
-                end = 8.dp
-            ),
+                top = Spacing.Sm + Spacing.Xs,
+                bottom = Spacing.Sm + Spacing.Xs,
+                end = Spacing.Sm
+            )
+            .heightIn(min = TouchTargets.Min),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
