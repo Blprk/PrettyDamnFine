@@ -10,6 +10,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.blprkfgre.prettydamnfine.data.DocumentRepository
+import com.blprkfgre.prettydamnfine.data.PrivateCopy
 import com.blprkfgre.prettydamnfine.data.PdfDocumentItem
 import com.blprkfgre.prettydamnfine.pdf.Bookmark
 import com.blprkfgre.prettydamnfine.pdf.CharPos
@@ -188,6 +189,34 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun refreshRecentDocuments() {
         recentDocuments.value = repository.getRecentDocuments()
+    }
+
+    // --- Storage management -----------------------------------------------------
+
+    fun storageCopies(): List<PrivateCopy> = repository.listPrivateCopies()
+
+    fun missingDocuments(): List<PdfDocumentItem> = repository.getMissingDocuments()
+
+    fun sourceName(item: PdfDocumentItem): String = repository.sourceName(item)
+
+    fun deletePrivateCopy(file: File): Boolean {
+        val deleted = repository.deletePrivateCopy(file)
+        refreshLibrary()
+        refreshRecentDocuments()
+        return deleted
+    }
+
+    fun forgetDocument(uri: Uri) {
+        repository.forgetDocument(uri)
+        refreshLibrary()
+        refreshRecentDocuments()
+    }
+
+    fun relinkDocument(oldUri: Uri, newSource: Uri): PdfDocumentItem? {
+        val updated = repository.relinkDocument(oldUri, newSource)
+        refreshLibrary()
+        refreshRecentDocuments()
+        return updated
     }
 
     // --- Viewer lifecycle -------------------------------------------------------

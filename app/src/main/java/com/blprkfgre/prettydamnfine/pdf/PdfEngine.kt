@@ -9,8 +9,10 @@ import android.net.Uri
 import android.util.LruCache
 import com.artifex.mupdf.fitz.Cookie
 import com.artifex.mupdf.fitz.Document
+import com.artifex.mupdf.fitz.Link
 import com.artifex.mupdf.fitz.Matrix
 import com.artifex.mupdf.fitz.Outline
+import com.artifex.mupdf.fitz.Page
 import com.artifex.mupdf.fitz.PDFAnnotation
 import com.artifex.mupdf.fitz.PDFDocument
 import com.artifex.mupdf.fitz.PDFPage
@@ -47,6 +49,19 @@ data class OutlineItem(
     val pageIndex: Int,
     val level: Int = 0,
     val children: List<OutlineItem> = emptyList()
+)
+
+/**
+ * A clickable area on a page. Coordinates are normalised to 0..1 of the page box,
+ * matching the convention used for search results and character positions.
+ *
+ * Exactly one of [targetPage] (a link inside this document) or [uri] (an external
+ * link, e.g. a web URL) is normally set.
+ */
+data class PdfLink(
+    val bounds: RectF,
+    val targetPage: Int? = null,
+    val uri: String? = null
 )
 
 /**
@@ -94,6 +109,9 @@ class PdfEngine private constructor(
     }
 
     companion object {
+        /** Tile edge length used for high-resolution zoomed rendering. */
+        private const val TILE_SIZE = 1024
+
         /**
          * Opens a URI with MuPDF. Content URIs are copied into app-private storage so
          * annotations can be saved; already-imported file:// URIs are opened directly
@@ -190,6 +208,58 @@ class PdfEngine private constructor(
             }
         }
         return result
+    }
+
+    /**
+     * All link annotations on a page, normalised to 0..1 of the page box.
+     * Internal destinations are resolved to a page index; external URIs are kept
+     * as a string so the UI can hand them to the browser.
+     */
+    fun getPageLinks(pageIndex: Int): List<PdfLink> = synchronized(nativeLock) {
+        val doc = document ?: return@synchronized emptyList()
+        if (pageIndex !in 0 until doc.countPages()) return@synchronized emptyList()
+        val page = try {
+            doc.loadPage(pageIndex)
+        } catch (e: Exception) {
+            return@synchronized emptyList()
+        }
+        try {
+            val bounds = page.bounds
+            val w = maxOf(1f, bounds.x1 - bounds.x0)
+            val h = maxOf(1f, bounds.y1 - bounds.y0)
+            val links = try { page.getLinks() } catch (e: Exception) { null } ?: emptyArray()
+            val result = mutableListOf<PdfLink>()
+            for (link in links) {
+                try {
+                    val r = link.getBounds() ?: continue
+                    val rect = RectF(
+                        (r.x0 - bounds.x0) / w,
+                        (r.y0 - bounds.y0) / h,
+                        (r.x1 - bounds.x0) / w,
+                        (r.y1 - bounds.y0) / h
+                    )
+                    val uri = link.getURI()
+                    val external = try { link.isExternal() } catch (e: Exception) { false }
+                    val target = if (!external && !uri.isNullOrBlank()) {
+                        try {
+                            doc.resolveLink(link)?.page?.takeIf { it in 0 until doc.countPages() }
+                        } catch (e: Exception) {
+                            null
+                        }
+                    } else null
+                    if (target != null || (!uri.isNullOrBlank() && external)) {
+                        result.add(PdfLink(rect, target, if (external) uri else null))
+                    }
+                } catch (e: Exception) {
+                    // Skip malformed links rather than failing the whole page.
+                } finally {
+                    try { link.destroy() } catch (e: Exception) { }
+                }
+            }
+            result
+        } finally {
+            page.destroy()
+        }
     }
 
     fun getPageAspectRatioCached(pageIndex: Int): Float =
@@ -305,6 +375,36 @@ class PdfEngine private constructor(
         prefetchJobs.clear()
     }
 
+    /** Draws one viewport tile. Caller must hold [nativeLock]. */
+    private fun drawTileLocked(
+        page: Page,
+        tileWidth: Int,
+        tileHeight: Int,
+        tileOffsetX: Int,
+        tileOffsetY: Int,
+        zoom: Float
+    ): Bitmap? {
+        val bitmap = Bitmap.createBitmap(tileWidth, tileHeight, Bitmap.Config.ARGB_8888)
+        val device = AndroidDrawDevice(
+            bitmap,
+            -tileOffsetX, -tileOffsetY,
+            0, 0, tileWidth, tileHeight,
+            false
+        )
+        val cookie = Cookie()
+        try {
+            page.run(device, Matrix(zoom), cookie)
+            return bitmap
+        } catch (e: Exception) {
+            bitmap.recycle()
+            return null
+        } finally {
+            device.close()
+            device.destroy()
+            cookie.destroy()
+        }
+    }
+
     /** Renders a viewport tile using a cancellable MuPDF cookie. */
     suspend fun renderTile(
         pageIndex: Int,
@@ -324,23 +424,72 @@ class PdfEngine private constructor(
                 val doc = document ?: return@synchronized null
                 if (pageIndex !in 0 until doc.countPages()) return@synchronized null
                 val page = doc.loadPage(pageIndex)
-                val bitmap = Bitmap.createBitmap(tileWidth, tileHeight, Bitmap.Config.ARGB_8888)
-                val device = AndroidDrawDevice(
-                    bitmap,
-                    -tileOffsetX.toInt(), -tileOffsetY.toInt(),
-                    0, 0, tileWidth, tileHeight,
-                    false
-                )
-                val cookie = Cookie()
                 try {
-                    page.run(device, Matrix(zoom), cookie)
-                    bitmap
+                    drawTileLocked(
+                        page, tileWidth, tileHeight,
+                        tileOffsetX.toInt(), tileOffsetY.toInt(), zoom
+                    )
+                } finally {
+                    page.destroy()
+                }
+            } ?: return@withLock null
+
+            val themed = if (theme != ReadingTheme.LIGHT) applyTheme(rendered, theme) else rendered
+            bitmapCache?.put(cacheKey, themed)
+            themed
+        }
+    }
+
+    /**
+     * Renders a whole page at high resolution for zoomed-in viewing.
+     *
+     * [renderPage] caps its bitmap at 2048px, which makes a 3–5x zoom look soft.
+     * This method draws the page in [TILE_SIZE] tiles through [drawTileLocked] so
+     * the final bitmap can be much larger without an equally large intermediate
+     * allocation inside MuPDF. The caller displays it at the unzoomed dp size;
+     * the existing graphics-layer zoom then scales the high-res pixels 1:1.
+     */
+    suspend fun renderSharpPage(
+        pageIndex: Int,
+        targetWidth: Int,
+        targetHeight: Int,
+        theme: ReadingTheme = ReadingTheme.LIGHT
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        if (targetWidth <= 0 || targetHeight <= 0) return@withContext null
+        val cacheKey = "sharp_${pageIndex}_${targetWidth}_${targetHeight}_${theme.name}"
+        bitmapCache?.get(cacheKey)?.let { return@withContext it }
+
+        mutex.withLock {
+            bitmapCache?.get(cacheKey)?.let { return@withLock it }
+            val rendered = synchronized(nativeLock) {
+                val doc = document ?: return@synchronized null
+                if (pageIndex !in 0 until doc.countPages()) return@synchronized null
+                val page = doc.loadPage(pageIndex)
+                try {
+                    val bounds = page.bounds
+                    val pageW = maxOf(1f, bounds.x1 - bounds.x0)
+                    val zoom = targetWidth / pageW
+                    val result = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+                    val canvas = Canvas(result)
+                    var top = 0
+                    while (top < targetHeight) {
+                        val th = minOf(TILE_SIZE, targetHeight - top)
+                        var left = 0
+                        while (left < targetWidth) {
+                            val tw = minOf(TILE_SIZE, targetWidth - left)
+                            val tile = drawTileLocked(page, tw, th, left, top, zoom)
+                            if (tile != null) {
+                                canvas.drawBitmap(tile, left.toFloat(), top.toFloat(), null)
+                                tile.recycle()
+                            }
+                            left += tw
+                        }
+                        top += th
+                    }
+                    result
                 } catch (e: Exception) {
                     null
                 } finally {
-                    device.close()
-                    device.destroy()
-                    cookie.destroy()
                     page.destroy()
                 }
             } ?: return@withLock null
@@ -481,7 +630,11 @@ class PdfEngine private constructor(
     fun invalidatePage(pageIndex: Int) {
         bitmapCache?.let { cache ->
             cache.snapshot().keys
-                .filter { it.startsWith("${pageIndex}_") || it.startsWith("tile_${pageIndex}_") }
+                .filter {
+                    it.startsWith("${pageIndex}_") ||
+                        it.startsWith("tile_${pageIndex}_") ||
+                        it.startsWith("sharp_${pageIndex}_")
+                }
                 .forEach { cache.remove(it) }
         }
     }

@@ -10,7 +10,9 @@ Legend: **Done** · **Partial** · **Missing**
 > components, accessible icon actions) and an explicit-state-machine refactor are in
 > place. 23 implicit modes were inventoried; 14 were promoted to sealed types under
 > `com.blprkfgre.prettydamnfine.state` while every legacy ViewModel flow remains
-> available. See [CHANGELOG.md](CHANGELOG.md) → Unreleased.
+> available. High-zoom tiled rendering, tappable PDF links and storage management
+> (unused-copy cleanup + re-linking missing files) are now included.
+> See [CHANGELOG.md](CHANGELOG.md).
 
 ## A. Core viewing / rendering
 | Feature | Status |

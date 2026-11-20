@@ -17,10 +17,34 @@ data class PdfDocumentItem(
     val sourceUri: String? = null
 )
 
+/** A file in the app's private PDF directory, with its library status. */
+data class PrivateCopy(
+    val file: File,
+    val sizeBytes: Long,
+    val lastModified: Long,
+    val title: String?,
+    val inLibrary: Boolean
+)
+
 class DocumentRepository(private val context: Context) {
     private val prefs = context.getSharedPreferences("pdf_library", Context.MODE_PRIVATE)
 
+    /**
+     * Returns only entries whose file is still openable. Entries whose file is
+     * missing are deliberately kept in storage so the Storage screen can offer
+     * to re-link them instead of silently losing the history.
+     */
     fun getDocuments(): List<PdfDocumentItem> {
+        val (list, titlesRepaired) = readStoredDocuments()
+        if (titlesRepaired) saveDocuments(list)
+        return list.filter { isUriAccessible(it.uri) }.sortedByDescending { it.lastAccessed }
+    }
+
+    /** Every stored entry, including ones whose file is currently missing. */
+    fun getDocumentsIncludingMissing(): List<PdfDocumentItem> =
+        readStoredDocuments().first.sortedByDescending { it.lastAccessed }
+
+    private fun readStoredDocuments(): Pair<List<PdfDocumentItem>, Boolean> {
         val docsStr = prefs.getString("documents", "[]")
         var titlesRepaired = false
         val list = try {
@@ -60,12 +84,7 @@ class DocumentRepository(private val context: Context) {
         } catch (e: Exception) {
             emptyList()
         }
-
-        // Drop entries whose file/permission is no longer available. This keeps the
-        // history from filling up with dead "random string" entries that cannot open.
-        val available = list.filter { isUriAccessible(it.uri) }
-        if (available.size != list.size || titlesRepaired) saveDocuments(available)
-        return available.sortedByDescending { it.lastAccessed }
+        return list to titlesRepaired
     }
 
     fun getRecentDocuments(limit: Int = 5): List<PdfDocumentItem> {
@@ -135,7 +154,7 @@ class DocumentRepository(private val context: Context) {
         val localUri = Uri.fromFile(file)
         val newDoc = addDocument(localUri, titleOverride = title, sourceUri = source.toString())
         // Avoid a stale duplicate entry created by an older version for the same source.
-        val all = getDocuments()
+        val all = getDocumentsIncludingMissing()
         val deduped = all.filter { it.uri == localUri || it.sourceUri != source.toString() }
         if (deduped.size != all.size) saveDocuments(deduped)
         return newDoc
@@ -157,7 +176,7 @@ class DocumentRepository(private val context: Context) {
             e.printStackTrace()
         }
 
-        val existing = getDocuments().toMutableList()
+        val existing = getDocumentsIncludingMissing().toMutableList()
         val previous = existing.firstOrNull { it.uri == uri }
         // Re-opening a library item passes no override. Never replace its real title with
         // the hash filename of our private copy.
@@ -196,7 +215,7 @@ class DocumentRepository(private val context: Context) {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        val existing = getDocuments().toMutableList()
+        val existing = getDocumentsIncludingMissing().toMutableList()
         existing.removeAll { it.uri == uri }
         saveDocuments(existing)
 
@@ -206,6 +225,70 @@ class DocumentRepository(private val context: Context) {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    // --- Storage management -----------------------------------------------------
+
+    /** Private copies on disk, annotated with whether a library entry still uses them. */
+    fun listPrivateCopies(): List<PrivateCopy> {
+        val docs = getDocumentsIncludingMissing()
+        val byUri = docs.associateBy { it.uri.toString() }
+        val files = importsDir().listFiles { f ->
+            f.isFile && f.name.endsWith(".pdf", ignoreCase = true)
+        } ?: emptyArray()
+        return files.map { file ->
+            val uri = Uri.fromFile(file).toString()
+            PrivateCopy(
+                file = file,
+                sizeBytes = file.length(),
+                lastModified = file.lastModified(),
+                title = byUri[uri]?.title,
+                inLibrary = byUri.containsKey(uri)
+            )
+        }.sortedByDescending { it.lastModified }
+    }
+
+    /** Library entries whose file is missing (e.g. a private copy was deleted). */
+    fun getMissingDocuments(): List<PdfDocumentItem> =
+        getDocumentsIncludingMissing().filter { !isUriAccessible(it.uri) }
+
+    /** Human-readable source name for a missing entry's re-link prompt. */
+    fun sourceName(item: PdfDocumentItem): String =
+        item.sourceUri?.let { getFileName(Uri.parse(it)) }
+            ?.takeIf { it.isNotBlank() && it != "Imported PDF" }
+            ?: item.title
+
+    /** Deletes a private copy. Never follows paths outside our own PDF directory. */
+    fun deletePrivateCopy(file: File): Boolean = try {
+        val dir = importsDir().canonicalPath + File.separator
+        file.canonicalPath.startsWith(dir) && file.delete()
+    } catch (e: Exception) {
+        e.printStackTrace()
+        false
+    }
+
+    /** Removes library entries without touching any file, so they can be re-linked later. */
+    fun forgetDocument(uri: Uri) {
+        val remaining = getDocumentsIncludingMissing().filter { it.uri != uri }
+        saveDocuments(remaining)
+    }
+
+    /**
+     * Points a missing library entry at a newly picked file. A fresh private copy is
+     * made first, then the original title and last-opened time are carried over.
+     */
+    fun relinkDocument(oldUri: Uri, newSource: Uri): PdfDocumentItem? {
+        val old = getDocumentsIncludingMissing().firstOrNull { it.uri == oldUri } ?: return null
+        val imported = importDocument(newSource)
+        val updated = imported.copy(
+            title = old.title,
+            lastAccessed = old.lastAccessed,
+            sourceUri = newSource.toString()
+        )
+        val finalDocs = getDocumentsIncludingMissing()
+            .filter { it.uri != oldUri && it.uri != imported.uri } + updated
+        saveDocuments(finalDocs)
+        return updated
     }
 
     private fun saveDocuments(docs: List<PdfDocumentItem>) {

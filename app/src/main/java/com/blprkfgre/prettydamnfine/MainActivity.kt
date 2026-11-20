@@ -10,8 +10,12 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.blprkfgre.prettydamnfine.state.IntentRoute
 import com.blprkfgre.prettydamnfine.ui.library.LibraryScreen
+import com.blprkfgre.prettydamnfine.ui.library.StorageScreen
 import com.blprkfgre.prettydamnfine.ui.theme.AppThemeMode
 import com.blprkfgre.prettydamnfine.ui.pdf.PdfViewerScreen
 import com.blprkfgre.prettydamnfine.ui.pdf.PdfViewerViewModel
@@ -60,14 +64,23 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainApp(viewModel: PdfViewerViewModel, dark: Boolean) {
     val engine by viewModel.engine.collectAsState()
+    var showStorage by remember { mutableStateOf(false) }
 
     if (engine == null) {
-        LibraryScreen(
-            viewModel = viewModel,
-            onOpenPdf = { uri -> viewModel.openDocument(uri) },
-            isDark = dark,
-            onToggleTheme = { viewModel.toggleAppTheme(dark) }
-        )
+        if (showStorage) {
+            StorageScreen(
+                viewModel = viewModel,
+                onBack = { showStorage = false }
+            )
+        } else {
+            LibraryScreen(
+                viewModel = viewModel,
+                onOpenPdf = { uri -> viewModel.openDocument(uri) },
+                isDark = dark,
+                onToggleTheme = { viewModel.toggleAppTheme(dark) },
+                onOpenStorage = { showStorage = true }
+            )
+        }
     } else {
         PdfViewerScreen(
             viewModel = viewModel,

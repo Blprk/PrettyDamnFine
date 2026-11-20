@@ -156,6 +156,10 @@ fun PdfViewerScreen(
     LaunchedEffect(navigateToPage) {
         if (navigateToPage >= 0) {
             listState.scrollToItem(navigateToPage)
+            // Page aspect ratios resolve asynchronously on first open. Re-align
+            // once sizes have settled so a jump (incl. a PDF link) lands exactly.
+            kotlinx.coroutines.delay(200)
+            listState.scrollToItem(navigateToPage)
             viewModel.onNavigationConsumed()
         }
     }
@@ -325,7 +329,9 @@ fun PdfViewerScreen(
                                 engine = currentEngine,
                                 pageIndex = index,
                                 baseWidthPx = maxWidth.toInt(),
-                                scale = 1f,
+                                // Pass the real zoom so the page is rendered at the
+                                // displayed resolution instead of an upscaled 1x bitmap.
+                                scale = scale,
                                 theme = effectiveTheme,
                                 highlights = searchHighlights[index] ?: emptyList(),
                                 charPositions = pageCharPositions[index] ?: emptyList(),
@@ -333,6 +339,24 @@ fun PdfViewerScreen(
                                 onSelectionChange = { start, end -> viewModel.setSelection(index, start, end) },
                                 onRequestCharPositions = { viewModel.fetchCharPositionsIfNeeded(index) },
                                 onClearSelection = { viewModel.clearSelection() },
+                                onLinkClick = { link ->
+                                    when {
+                                        link.targetPage != null ->
+                                            viewModel.requestNavigateToPage(link.targetPage)
+                                        !link.uri.isNullOrBlank() -> {
+                                            val parsed = Uri.parse(link.uri)
+                                            if (parsed.scheme in setOf("http", "https", "mailto", "tel")) {
+                                                try {
+                                                    context.startActivity(Intent(Intent.ACTION_VIEW, parsed))
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, "Cannot open link", Toast.LENGTH_SHORT).show()
+                                                }
+                                            } else {
+                                                Toast.makeText(context, "Unsupported link", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                },
                                 revision = annotationRevision,
                                 onDoubleTap = { pos ->
                                     if (scale > 1f) {

@@ -5,6 +5,16 @@ All notable changes to PrettyDamnFine are documented here. This project follows
 
 ---
 
+## [2.0.4] — 2026-11-21
+
+### Added
+- **Sharper zoom.** Pages are now rendered at their displayed resolution (up to 2.5x) using tiled MuPDF rendering via `renderTile()`/`drawTileLocked()`, instead of upscaling a 1x bitmap. High-zoom text stays crisp and memory use stays bounded.
+- **Tappable PDF links.** Internal links jump to their destination page; external links open in the browser/mail/phone app. Link hit areas are read from the PDF and normalised to the page box.
+- **Storage screen** (library folder icon): shows app-owned private copies with size and date, reclaims unused copies individually or in bulk, and lists library entries whose files went missing. Missing entries can be **re-linked** to a newly picked file (preserving title/history) or forgotten.
+- Missing library entries are no longer silently deleted from stored metadata, so they can be recovered from the Storage screen after a restart.
+
+---
+
 ## [2.0.3] — 2026-11-20
 
 ### Fixed

@@ -53,6 +53,7 @@ fun LibraryScreen(
     onOpenPdf: (Uri) -> Unit,
     isDark: Boolean,
     onToggleTheme: () -> Unit,
+    onOpenStorage: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val documents by viewModel.libraryDocuments.collectAsState()
@@ -159,6 +160,11 @@ fun LibraryScreen(
                 TopAppBar(
                     title = { Text("Pretty Damn Fine", style = MaterialTheme.typography.headlineSmall) },
                     actions = {
+                        ActionIconButton(
+                            icon = Icons.Filled.Folder,
+                            contentDescription = "Manage storage",
+                            onClick = onOpenStorage
+                        )
                         ActionIconButton(
                             icon = if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
                             contentDescription = if (isDark) "Switch to light theme" else "Switch to dark theme",

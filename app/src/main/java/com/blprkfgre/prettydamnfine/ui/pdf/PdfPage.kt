@@ -23,12 +23,15 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import com.blprkfgre.prettydamnfine.pdf.CharPos
 import com.blprkfgre.prettydamnfine.pdf.PdfEngine
+import com.blprkfgre.prettydamnfine.pdf.PdfLink
 import com.blprkfgre.prettydamnfine.pdf.ReadingTheme
 import com.blprkfgre.prettydamnfine.ui.theme.PdfHighlight
 import com.blprkfgre.prettydamnfine.ui.theme.PdfSelectionDark
 import com.blprkfgre.prettydamnfine.ui.theme.PdfSelectionLight
 import com.blprkfgre.prettydamnfine.ui.theme.pageBackground
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 @Composable
 fun PdfPage(
@@ -43,6 +46,7 @@ fun PdfPage(
     onSelectionChange: (Int, Int) -> Unit = { _, _ -> },
     onRequestCharPositions: () -> Unit = {},
     onClearSelection: () -> Unit = {},
+    onLinkClick: (PdfLink) -> Unit = {},
     onDoubleTap: (Offset) -> Unit = {},
     revision: Int = 0,
     modifier: Modifier = Modifier
@@ -56,17 +60,30 @@ fun PdfPage(
         aspectRatio = engine.getPageAspectRatio(pageIndex)
     }
 
+    // Zoom is applied to the whole page list with graphicsLayer. Rendering at the
+    // same resolution keeps text crisp instead of upscaling a 1x bitmap. Cap the
+    // render scale so a 5x zoom cannot allocate an unsafe bitmap.
+    val renderScale = scale.coerceIn(1f, 2.5f)
     val baseHeightPx = (baseWidthPx / aspectRatio).toInt()
-    val targetWidthPx = (baseWidthPx * scale).toInt()
-    val targetHeightPx = (baseHeightPx * scale).toInt()
+    val targetWidthPx = (baseWidthPx * renderScale).toInt().coerceAtLeast(1)
+    val targetHeightPx = (baseHeightPx * renderScale).toInt().coerceAtLeast(1)
 
-    LaunchedEffect(engine, pageIndex, scale, theme, revision) {
+    LaunchedEffect(engine, pageIndex, renderScale, theme, revision) {
         if (renderedScale != 0f) delay(150)
-        val newBitmap = engine.renderPage(pageIndex, targetWidthPx, targetHeightPx, theme)
+        val newBitmap = if (renderScale > 1.05f) {
+            engine.renderSharpPage(pageIndex, targetWidthPx, targetHeightPx, theme)
+        } else {
+            engine.renderPage(pageIndex, targetWidthPx, targetHeightPx, theme)
+        }
         newBitmap?.let {
             bitmap = it.asImageBitmap()
-            renderedScale = scale
+            renderedScale = renderScale
         }
+    }
+
+    var links by remember { mutableStateOf<List<PdfLink>>(emptyList()) }
+    LaunchedEffect(engine, pageIndex, revision) {
+        links = withContext(Dispatchers.IO) { engine.getPageLinks(pageIndex) }
     }
 
     val density = LocalDensity.current
@@ -79,11 +96,20 @@ fun PdfPage(
             .width(with(density) { baseWidthPx.toDp() })
             .aspectRatio(aspectRatio)
             .background(theme.pageBackground)
-            .pointerInput(pageIndex, charPositions) {
+            .pointerInput(pageIndex, charPositions, links) {
                 detectTapGestures(
-                    onTap = { 
-                        // Only clear selection if we're not actively selecting
-                        if (!isSelecting) {
+                    onTap = { pos ->
+                        // A tap inside a PDF link takes precedence over clearing a
+                        // selection. Long-press/drag selection is handled below.
+                        val hit = links.firstOrNull { link ->
+                            val r = link.bounds
+                            pos.x >= r.left * size.width && pos.x <= r.right * size.width &&
+                                pos.y >= r.top * size.height && pos.y <= r.bottom * size.height
+                        }
+                        if (hit != null) {
+                            isSelecting = false
+                            onLinkClick(hit)
+                        } else if (!isSelecting) {
                             onClearSelection()
                         }
                     },
